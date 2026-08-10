@@ -1,5 +1,5 @@
 function Appointment(){
-    return <h1>Appointment</h1>
+    return <h1>Request an Appointment</h1>;
 }
 
 export default Appointment;
