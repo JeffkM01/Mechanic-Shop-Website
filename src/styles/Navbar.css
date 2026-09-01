@@ -1,0 +1,27 @@
+.nav-container{
+    border: 1px solid #ccc;
+    padding: 20px;
+    margin: 0px;
+    border-radius: 10px;
+}
+
+/* Individual card layout */
+.nav-card {
+    display: flex;
+    flex-direction: row; /* Forces links to stay horizontally side-by-side */
+    gap: 30px;           /* Spaces out your links beautifully */ 
+}
+
+/*links in nav-card class*/
+.nav-card a{
+    font-size: 20px;
+    font-weight: 400;
+    transition: font-weight 0.2s ease;
+    text-decoration: none;
+}
+
+/*hover over links*/
+.nav-card a:hover{
+    color: black;
+    font-weight: 700;
+}

@@ -15,3 +15,12 @@
 
 # Accomplishment on Day 5: 8/17/2026
   -goal: make a fully functional and styled Services page with cards instead of list
+
+# Accomplishment on Day 6: 8/18/2026
+  -start appointment page
+
+# Accomplishment on Day 7: 9/1/2026
+  -worked on navbar styling
+
+# Accomplishment on Day 7: 9/2/2026
+  -
