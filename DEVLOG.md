@@ -22,5 +22,8 @@
 # Accomplishment on Day 7: 9/1/2026
   -worked on navbar styling
 
-# Accomplishment on Day 7: 9/2/2026
-  -
+# Accomplishment on Day 8: 9/2/2026
+  -work on home page
+  -Left off at the why choose us CARDS.
+
+# Accomplishment on Day 9:

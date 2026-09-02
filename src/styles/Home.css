@@ -1,0 +1,21 @@
+.home-container{
+    border: 1px solid #ccc;
+    padding: 20px;
+    margin: 5px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+}
+
+.service-button a{
+    text-decoration: none;
+    font-weight: 400;
+    transition: font-weight 0.2s ease;
+}
+
+
+/*hover over links*/
+.service-button a:hover{
+    color: black;
+    font-weight: 700;
+}
