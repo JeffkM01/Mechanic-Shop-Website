@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Never commit MongoDB credentials or other environment secrets
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
