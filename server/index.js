@@ -87,7 +87,7 @@ app.patch("/api/mechanic/appointments/:id", auth.requireAuth, auth.requireCsrf, 
     const appointment = await Appointment.findOneAndUpdate(
       { _id: id, status: "pending" },
       { $set: { status } },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select("status date time service name");
     if (!appointment) {
       return res.status(409).json({ error: "This request was already reviewed or no longer exists." });
