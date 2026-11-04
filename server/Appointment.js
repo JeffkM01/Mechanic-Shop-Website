@@ -10,6 +10,13 @@ const appointmentSchema = new mongoose.Schema({
   time: { type: String, required: true }, // HH:MM, shop-local time
   notes: { type: String, default: "", maxlength: 1000 },
   status: { type: String, enum: ["pending", "confirmed", "declined"], default: "pending" },
+  // Queue flags are stored with the appointment so email failures cannot undo the booking.
+  // Old Phase 2/3 records have no flags and are not sent old "request received" emails.
+  notificationState: {
+    requestCustomer: { type: String, enum: ["pending", "sent"], default: "pending" },
+    requestMechanic: { type: String, enum: ["pending", "sent"], default: "pending" },
+    decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
+  },
 }, { timestamps: true });
 
 export default mongoose.model("Appointment", appointmentSchema);

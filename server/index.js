@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import Appointment from "./Appointment.js";
 import { prepareAppointment } from "./appointmentInput.js";
 import { createMechanicAuth } from "./mechanicAuth.js";
+import { createEmailNotifications } from "./emailNotifications.js";
 
 // The mechanic's requested dates/times are local to the St. Louis area.
 process.env.TZ = "America/Chicago";
@@ -18,6 +19,9 @@ const auth = createMechanicAuth(process.env.MECHANIC_ADMIN_PASSWORD, {
   secureCookies: process.env.NODE_ENV === "production",
 });
 
+// Created during startup after MongoDB connects. Routes only run after startup.
+let notifications;
+
 app.get("/api/health", (_req, res) => {
   const connected = mongoose.connection.readyState === 1;
   res.status(connected ? 200 : 503).json({ database: connected ? "connected" : "disconnected" });
@@ -30,11 +34,13 @@ app.post("/api/appointments", async (req, res) => {
 
   try {
     const appointment = await Appointment.create(value);
-    return res.status(201).json({
+    res.status(201).json({
       id: appointment.id,
       status: appointment.status,
+      emailNotification: notifications.enabled ? "queued" : "disabled",
       message: "Request saved. The mechanic has not approved it yet.",
     });
+    notifications.kick();
   } catch (err) {
     console.error("Failed to save appointment:", err);
     return res.status(503).json({ error: "Unable to save the request right now. Please try again." });
@@ -83,16 +89,16 @@ app.patch("/api/mechanic/appointments/:id", auth.requireAuth, auth.requireCsrf, 
   }
 
   try {
-    // Atomic update: a reviewed request cannot be approved/declined twice.
     const appointment = await Appointment.findOneAndUpdate(
       { _id: id, status: "pending" },
-      { $set: { status } },
+      { $set: { status, "notificationState.decisionCustomer": "pending" } },
       { returnDocument: "after", runValidators: true },
     ).select("status date time service name");
     if (!appointment) {
       return res.status(409).json({ error: "This request was already reviewed or no longer exists." });
     }
-    return res.json({ id: appointment.id, status: appointment.status });
+    res.json({ id: appointment.id, status: appointment.status, emailNotification: notifications.enabled ? "queued" : "disabled" });
+    notifications.kick();
   } catch (err) {
     console.error("Failed to update appointment:", err);
     return res.status(503).json({ error: "Unable to update this appointment right now." });
@@ -117,8 +123,13 @@ if (!uri || uri.includes("DB_USER") || uri.includes("CLUSTER.mongodb.net")) {
 
 try {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
-  app.listen(port, "127.0.0.1", () => console.log(`Appointment API listening at http://localhost:${port}`));
+  notifications = await createEmailNotifications({ Appointment });
+  notifications.start();
+  app.listen(port, "127.0.0.1", () => {
+    console.log(`Appointment API listening at http://localhost:${port}`);
+    console.log(`Email notifications ${notifications.enabled ? "enabled" : "disabled (SMTP not configured)"}`);
+  });
 } catch (err) {
-  console.error("Could not connect to MongoDB:", err.message);
+  console.error("Could not start the appointment API:", err.message);
   process.exit(1);
 }
