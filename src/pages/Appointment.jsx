@@ -60,7 +60,7 @@ function Appointment() {
         throw new Error(data.error || "Could not save the appointment request.");
       }
 
-      setConfirmation({ id: data.id, status: data.status });
+      setConfirmation({ id: data.id, status: data.status, emailNotification: data.emailNotification });
       setPreview(null);
       setForm(emptyForm);
     } catch (err) {
@@ -144,7 +144,9 @@ function Appointment() {
           <h2>Appointment request saved!</h2>
           <p>Your request has been stored with status <strong>{confirmation.status}</strong>. It is not confirmed until the mechanic approves it.</p>
           <p><strong>Reference ID:</strong> {confirmation.id}</p>
-          <p><strong>Demo note:</strong> Email/SMS notifications are not enabled yet. Please contact the mechanic directly if you need an update.</p>
+          <p>{confirmation.emailNotification === "queued"
+            ? "An acknowledgment email has been queued for delivery. Email delivery may take a little time."
+            : "Email notifications are not configured yet. Please contact the mechanic directly if you need an update."}</p>
         </section>
       )}
     </main>

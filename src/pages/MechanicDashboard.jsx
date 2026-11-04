@@ -92,10 +92,12 @@ function MechanicDashboard() {
     setError("");
     setNotice("");
     try {
-      await mechanicRequest(`/appointments/${id}`, {
+      const result = await mechanicRequest(`/appointments/${id}`, {
         method: "PATCH", body: { status }, csrfToken,
       });
-      setNotice(`Appointment ${status}. Customer notifications are not enabled yet.`);
+      setNotice(`Appointment ${status}. ${result.emailNotification === "queued"
+        ? "A customer email has been queued for delivery."
+        : "Email notifications are not configured yet."}`);
       setRefreshCount((count) => count + 1);
     } catch (err) {
       if (err.status === 401) {
@@ -195,7 +197,7 @@ function MechanicDashboard() {
               </article>
             ))}
           </div>
-          <p className="mechanic-notice">Status changes update MongoDB, but do not notify customers yet. Email notifications are planned for Phase 4.</p>
+          <p className="mechanic-notice">Changes are saved in MongoDB. If SMTP is configured, customer notification emails are queued and retried if the mail server is temporarily unavailable.</p>
         </section>
       )}
     </main>
