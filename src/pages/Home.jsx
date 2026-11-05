@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
+import { getService, getAppointmentLink } from "../../shared/services.js";
 import { BookingBanner, Icon } from "../components/CustomerUI";
 import "../styles/Home.css";
 
 const featured = [
-  { number: "01", icon: "oil", name: "Oil Change", description: "A fresh start for your engine. Keep routine oil and filter care on your radar.", tag: "EVERYDAY MAINTENANCE" },
-  { number: "02", icon: "brakes", name: "Brake Repairs", description: "Squeaks, shudders, or a different feel at the pedal? Let’s talk about your brakes.", tag: "STOP WITH CONFIDENCE" },
-  { number: "03", icon: "engine", name: "Engine Diagnostics", description: "Make sense of that warning light. Start with a conversation about what’s changed.", tag: "GET A CLEARER PICTURE" },
+  { service: getService("Oil Change"), tag: "EVERYDAY MAINTENANCE" },
+  { service: getService("Brake Repairs"), tag: "STOP WITH CONFIDENCE" },
+  { service: getService("Engine Diagnostics"), tag: "GET A CLEARER PICTURE" },
 ];
 const reasons = [
   { icon: "chat", title: "Real conversations.", text: "Tell us what you’re noticing. We’ll listen, explain the options, and keep you in the loop." },
@@ -36,15 +37,15 @@ export default function Home() {
 
       <section className="section-pad home-services" aria-labelledby="home-services-title">
         <div className="site-container">
-          <div className="section-heading"><div><p className="eyebrow">WHAT WE DO</p><h2 id="home-services-title">Everyday care.<br />When you need it.</h2></div><div><p>From the routine to the unexpected,<br className="desktop-break" /> find the right place to start.</p><Link className="text-link" to="/services">View all five services <Icon name="arrow" /></Link></div></div>
-          <div className="home-service-grid">{featured.map(service => (
+          <div className="section-heading"><div><p className="eyebrow">WHAT WE DO</p><h2 id="home-services-title">Everyday care.<br />When you need it.</h2></div><div><p>From the routine to the unexpected,<br className="desktop-break" /> find the right place to start.</p><Link className="text-link" to="/services">Explore our service categories <Icon name="arrow" /></Link></div></div>
+          <div className="home-service-grid">{featured.map(({ service, tag }, index) => (
             <article className="home-service-card" key={service.name}>
-              <div className="home-card-top"><Icon name={service.icon} /><span>{service.number}</span></div>
-              <p className="home-card-tag">{service.tag}</p><h3>{service.name}</h3><p>{service.description}</p>
-              <Link className="text-link" to="/services">Explore {service.name.toLowerCase()} <Icon name="arrow" /></Link>
+              <div className="home-card-top"><Icon name={service.icon} /><span>0{index + 1}</span></div>
+              <p className="home-card-tag">{tag}</p><h3>{service.name}</h3><p>{service.description}</p>
+              <Link className="text-link" to={getAppointmentLink(service.name)}>Request {service.name.toLowerCase()} <Icon name="arrow" /></Link>
             </article>
           ))}</div>
-          <div className="home-more-services"><span>Also here for your <Link to="/services">Air Filter Change</Link> and <Link to="/services">AC & Heating Repair</Link>.</span><Icon name="car" /></div>
+          <div className="home-more-services"><span>Explore <Link to="/services#basic-maintenance">basic maintenance</Link> and <Link to="/services#repairs-diagnostics">repairs & diagnostics</Link>.</span><Icon name="car" /></div>
         </div>
       </section>
 

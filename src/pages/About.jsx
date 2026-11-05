@@ -27,7 +27,7 @@ export default function About() {
         <div>
           <p className="eyebrow">THE WAY WE SEE IT</p>
           <h2 id="about-intro-heading">Your vehicle matters.<br />So does your peace of mind.</h2>
-          <p>Welcome to Ed's Auto Shop. We offer a focused range of maintenance and repair services, including oil changes, air filter changes, brake repairs, AC and heating repair, and engine diagnostics.</p>
+          <p>Welcome to Ed's Auto Shop. We offer a focused range of maintenance and repair services, including oil changes, engine air filter replacement, brake repairs, AC and heating repair, and engine diagnostics.</p>
           <p>Whether you know exactly what you need or just know something feels different, you can start with a simple appointment request. Tell us what you're experiencing, and we'll take it from there.</p>
           <Link className="text-link" to="/services">Explore our services <Icon name="arrow" /></Link>
         </div>

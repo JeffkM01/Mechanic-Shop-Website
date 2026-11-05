@@ -1,3 +1,5 @@
+import { isValidServiceName } from "../../shared/services.js";
+
 export function localDateString(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -20,6 +22,10 @@ export function validateAppointment(form, now = new Date()) {
     if (!String(form[field] ?? "").trim()) {
       return `Please provide your ${label}.`;
     }
+  }
+
+  if (!isValidServiceName(form.service)) {
+    return "Please select a valid service.";
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {

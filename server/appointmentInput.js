@@ -1,9 +1,7 @@
 import { validateAppointment } from "../src/utils/appointmentValidation.js";
 
-export const services = [
-  "Oil Change", "Air Filter Change", "Brake Repairs",
-  "AC & Heating Repair", "Engine Diagnostics", "Other / Not Sure",
-];
+// Preserve the existing export for consumers while sharing the catalog.
+export { ACCEPTED_SERVICE_NAMES as services } from "../shared/services.js";
 
 const limits = {
   name: 80, email: 254, phone: 24, vehicle: 120,
@@ -26,10 +24,6 @@ export function prepareAppointment(body, now = new Date()) {
     if (data[key].length > max) {
       return { error: `${key} must be ${max} characters or fewer.` };
     }
-  }
-
-  if (!services.includes(data.service)) {
-    return { error: "Please select a valid service." };
   }
 
   const error = validateAppointment(data, now);

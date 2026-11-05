@@ -133,3 +133,7 @@
 
 .appointment-success h2 { margin: 0 0 8px; }
 .appointment-success p { margin: 8px 0; }
+
+.appointment-field { min-width: 0; }
+.appointment-service-note { padding: 14px 16px; margin: 0; background: #fff5ed; border-left: 3px solid #f37438; border-radius: 4px; color: #744322; font-size: .875rem; line-height: 1.6; }
+.appointment-provisional { color: #744322; }
