@@ -56,6 +56,7 @@ app.use("/api/mechanic", (_req, res, next) => {
 // Mechanic routes: no public endpoint exposes customers' contact details.
 app.post("/api/mechanic/login", auth.login);
 app.get("/api/mechanic/session", auth.requireAuth, auth.session);
+app.post("/api/mechanic/activity", auth.requireAuth, auth.requireCsrf, auth.activity);
 app.post("/api/mechanic/logout", auth.requireAuth, auth.requireCsrf, auth.logout);
 
 app.get("/api/mechanic/appointments", auth.requireAuth, async (req, res) => {

@@ -1,0 +1,4 @@
+.site-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 32px; padding: 16px 22px; border-top: 1px solid #dae2e8; color: #536f7d; font: 0.875rem Arial, sans-serif; }
+.site-footer a { color: #426279; padding: 12px 4px; }
+.site-footer a:hover { color: #193044; }
+.site-footer a:focus-visible { outline: 2px solid #175b86; outline-offset: 4px; }

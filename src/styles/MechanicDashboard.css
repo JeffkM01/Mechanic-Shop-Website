@@ -37,3 +37,8 @@
 .mechanic-empty { grid-column: 1 / -1; padding: 26px; border: 1px dashed #b9cbd6; border-radius: 12px; }
 .mechanic-notice { margin-top: 26px; color: #536f7d; line-height: 1.5; font-size: 0.9rem; }
 @media (max-width: 720px) { .mechanic-grid { grid-template-columns: 1fr; } .mechanic-header { flex-direction: column; } .mechanic-card dl { grid-template-columns: 86px minmax(0, 1fr); } }
+
+/* Conceal private content before a page can enter the back/forward cache. */
+.staff-session-checking .mechanic-workspace { visibility: hidden; }
+.mechanic-logout { min-height: 44px; white-space: nowrap; border: 2px solid #23475f; }
+.mechanic-logout:focus-visible { outline: 3px solid #175b86; outline-offset: 3px; }

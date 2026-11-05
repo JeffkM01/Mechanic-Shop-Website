@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCallback);
 const COOKIE = "mechanic_session";
 const SESSION_MS = 8 * 60 * 60 * 1000;
+const IDLE_MS = 20 * 60 * 1000;
 const LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 
@@ -41,7 +42,7 @@ export function createMechanicAuth(password, { now = () => Date.now(), secureCoo
     const token = getCookie(req, COOKIE);
     const session = sessions.get(token);
     if (!session) return null;
-    if (session.expiresAt <= now()) {
+    if (session.expiresAt <= now() || session.lastActivityAt + IDLE_MS <= now()) {
       sessions.delete(token);
       return null;
     }
@@ -86,13 +87,30 @@ export function createMechanicAuth(password, { now = () => Date.now(), secureCoo
     }
     const token = randomBytes(32).toString("hex");
     const csrf = randomBytes(32).toString("hex");
-    sessions.set(token, { csrf, expiresAt: now() + SESSION_MS });
+    const session = { csrf, expiresAt: now() + SESSION_MS, lastActivityAt: now() };
+    sessions.set(token, session);
     res.cookie(COOKIE, token, cookieOptions);
-    return res.json({ authenticated: true, csrfToken: csrf });
+    return res.json(sessionDetails(session));
+  }
+
+  function sessionDetails(session) {
+    return {
+      authenticated: true,
+      csrfToken: session.csrf,
+      expiresAt: session.expiresAt,
+      idleExpiresAt: Math.min(session.expiresAt, session.lastActivityAt + IDLE_MS),
+    };
+  }
+
+  // Only this explicit, CSRF-protected endpoint renews idle time. Reads and
+  // background session checks must never keep an unattended dashboard alive.
+  function activity(req, res) {
+    req.mechanic.session.lastActivityAt = now();
+    return res.json(sessionDetails(req.mechanic.session));
   }
 
   function session(req, res) {
-    return res.json({ authenticated: true, csrfToken: req.mechanic.session.csrf });
+    return res.json(sessionDetails(req.mechanic.session));
   }
 
   function logout(req, res) {
@@ -103,5 +121,5 @@ export function createMechanicAuth(password, { now = () => Date.now(), secureCoo
     return res.json({ authenticated: false });
   }
 
-  return { login, session, logout, requireAuth, requireCsrf };
+  return { login, session, activity, logout, requireAuth, requireCsrf };
 }
