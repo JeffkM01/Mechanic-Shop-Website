@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import RouteExperience from "./components/RouteExperience";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
 import Home from "./pages/Home";
@@ -11,15 +12,18 @@ import MechanicDashboard from "./pages/MechanicDashboard";
 function App() {
   return (
     <BrowserRouter>
+      <RouteExperience />
       <Navbar />
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/about" element={<About />} />
-        <Route path="/services" element={<Services />} />
-        <Route path="/contact" element={<Contact />} />
-        <Route path="/appointment" element={<Appointment />} />
-        <Route path="/mechanic" element={<MechanicDashboard />} />
-      </Routes>
+      <div id="main-content" className="route-content" tabIndex={-1}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/services" element={<Services />} />
+          <Route path="/contact" element={<Contact />} />
+          <Route path="/appointment" element={<Appointment />} />
+          <Route path="/mechanic" element={<MechanicDashboard />} />
+        </Routes>
+      </div>
       <Footer />
     </BrowserRouter>
   );

@@ -1,0 +1,83 @@
+.about-introduction { display: grid; grid-template-columns: 1.05fr 1fr; align-items: center; gap: 90px; }
+.about-introduction > div > p:not(.eyebrow) { max-width: 550px; color: #5d6974; line-height: 1.85; margin: 20px 0; }
+.about-introduction .text-link { margin-top: 10px; }
+.about-mission { padding: 42px; background: #101f2c; color: white; border-radius: 8px; position: relative; overflow: hidden; }
+.about-mission::before { content: ""; position: absolute; width: 5px; background: #f37438; inset: 0 auto 0 0; }
+.about-mission-mark { margin-bottom: 34px; color: #f37438; }
+.about-mission-mark svg { width: 42px; height: 42px; }
+.about-mission .eyebrow { color: #f9a26f; }
+.about-mission h3 { font-size: clamp(1.9rem, 3.2vw, 2.65rem); line-height: 1.15; letter-spacing: -.04em; margin: 14px 0 20px; }
+.about-mission > p:not(.eyebrow) { line-height: 1.8; color: #c1cbd3; }
+.about-mission-bottom { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid #35434e; margin-top: 36px; padding-top: 22px; font-size: .66rem; letter-spacing: .12em; font-weight: 700; }
+.about-mission-bottom span:last-child { color: #f9a26f; }
+.about-values-section { background: #f3f5f6; }
+.about-section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 40px; margin-bottom: 36px; }
+.about-section-heading > p { max-width: 340px; color: #5d6974; line-height: 1.8; margin: 0 0 4px; }
+.about-values-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+.about-value { background: #fff; padding: 32px; border: 1px solid #e3e7ea; border-radius: 8px; }
+.about-value-top { display: flex; justify-content: space-between; align-items: center; color: #64727d; margin-bottom: 38px; font-size: .8rem; font-weight: 600; }
+.about-value-top svg { color: #c04c17; width: 30px; height: 30px; }
+.about-value h3 { margin: 0 0 14px; font-size: 1.3rem; letter-spacing: -.03em; }
+.about-value > p { color: #5d6974; line-height: 1.8; margin: 0; }
+.about-process { display: grid; grid-template-columns: 1fr 1fr; gap: 100px; }
+.about-steps { list-style: none; margin: 0; padding: 0; }
+.about-steps li { display: flex; gap: 24px; padding: 0 0 25px; margin-bottom: 25px; border-bottom: 1px solid #e3e7ea; }
+.about-steps li:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+.about-step-number { font-size: .8rem; color: #b24512; font-weight: 700; padding-top: 4px; }
+.about-steps h3 { margin: 0 0 10px; font-size: 1.12rem; letter-spacing: -.025em; }
+.about-steps p { margin: 0; color: #5d6974; line-height: 1.8; }
+.contact-intro { display: grid; grid-template-columns: 1fr 1fr; gap: 70px; align-items: center; margin-bottom: 34px; }
+.contact-placeholder-note { background: #fff6ee; border: 1px solid #f3dfcd; padding: 18px 20px; border-radius: 6px; display: flex; align-items: flex-start; gap: 14px; line-height: 1.65; font-size: .87rem; color: #6b4c38; margin: 0; }
+.contact-placeholder-note > svg { color: #af4516; flex: 0 0 21px; margin-top: 3px; }
+.contact-placeholder-note strong { display: block; color: #593b28; margin-bottom: 3px; }
+.contact-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+.contact-card { padding: 30px; border: 1px solid #dfe4e7; border-radius: 8px; }
+.contact-card-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 36px; }
+.contact-card-top > svg { width: 27px; height: 27px; color: #ba4b18; }
+.contact-placeholder-tag { font-size: .64rem; text-transform: uppercase; letter-spacing: .09em; padding: 6px 8px; background: #f3f5f6; color: #5d6974; font-weight: 700; border-radius: 3px; }
+.contact-card h3 { font-size: .88rem; font-weight: 500; color: #5d6974; margin: 0 0 10px; }
+.contact-detail-value { font-size: 1.35rem; font-weight: 700; line-height: 1.4; letter-spacing: -.03em; margin: 0 0 16px; overflow-wrap: anywhere; }
+.contact-detail-value > span { font-size: 1.1rem; }
+.contact-email { font-size: 1.12rem; }
+.contact-card > p:last-child { font-size: .85rem; color: #65717b; line-height: 1.75; margin: 0; }
+.contact-options-section { background: #f3f5f6; }
+.contact-options-grid { display: grid; grid-template-columns: 1fr .9fr; gap: 100px; align-items: start; }
+.contact-booking > p:not(.eyebrow):not(.contact-booking-note) { color: #5d6974; line-height: 1.8; max-width: 510px; }
+.contact-checklist { list-style: none; padding: 0; margin: 26px 0 30px; display: grid; gap: 15px; color: #46545f; font-size: .9rem; }
+.contact-checklist li { display: flex; align-items: flex-start; gap: 10px; line-height: 1.6; }
+.contact-checklist svg { color: #a54116; width: 19px; height: 19px; flex-shrink: 0; margin-top: 2px; }
+.contact-booking-note { font-size: .78rem; color: #65717b; margin: 15px 0 0; }
+.contact-hours { background: #fff; padding: 34px; border-radius: 8px; border: 1px solid #e0e5e8; }
+.contact-hours-heading { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.contact-hours-heading > svg { width: 29px; height: 29px; color: #af4516; }
+.contact-hours h3 { font-size: 1.6rem; letter-spacing: -.04em; margin: 0 0 8px; }
+.contact-hours > p { color: #65717b; font-size: .9rem; margin: 0; line-height: 1.7; }
+.contact-hours dl { margin: 26px 0; }
+.contact-hours dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding: 16px 0; border-bottom: 1px solid #e4e8ea; font-size: .85rem; }
+.contact-hours dt { font-weight: 600; }
+.contact-hours dd { color: #65717b; margin: 0; text-align: right; }
+.contact-hours > .contact-hours-note { font-size: .78rem; line-height: 1.75; }
+.contact-help { display: flex; align-items: center; gap: 28px; }
+.contact-help > svg { width: 42px; height: 42px; flex-shrink: 0; color: #b24512; }
+.contact-help h2 { font-size: 1.5rem; letter-spacing: -.03em; margin: 0 0 10px; }
+.contact-help p { color: #65717b; line-height: 1.7; margin: 0; }
+.contact-help > .text-link { margin-left: auto; white-space: nowrap; }
+@media (max-width: 1000px) {
+  .about-introduction, .about-process, .contact-options-grid { gap: 40px; }
+  .about-mission { padding: 32px; }
+  .about-value, .contact-card { padding: 25px; }
+  .contact-intro { gap: 30px; }
+}
+@media (max-width: 760px) {
+  .about-introduction, .about-process, .contact-options-grid, .contact-intro { grid-template-columns: 1fr; gap: 32px; }
+  .about-values-grid, .contact-cards { grid-template-columns: 1fr; gap: 16px; }
+  .about-section-heading { display: block; }
+  .about-section-heading > p { margin-top: 18px; max-width: 100%; }
+  .about-value-top { margin-bottom: 28px; }
+  .contact-card-top { margin-bottom: 25px; }
+  .contact-help { align-items: flex-start; flex-wrap: wrap; gap: 18px; }
+  .contact-help > div { flex: 1; min-width: 200px; }
+  .contact-help > .text-link { margin-left: 60px; }
+  .contact-hours { padding: 26px; }
+  .about-steps li { gap: 18px; }
+}
