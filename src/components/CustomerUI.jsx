@@ -6,6 +6,8 @@ const paths = {
   wrench: <path d="M14 6a5 5 0 0 0-6 6L3 17a2.8 2.8 0 0 0 4 4l5-5a5 5 0 0 0 6-6l-3 3-4-4 3-3Z" />,
   oil: <><path d="M4 9h10l3 4-3 5H4V9Zm0 0L2 6m5 0h5m-2 0v3m7 4 3-4h2" /><path d="M20 15s-2 3-2 4a2 2 0 0 0 4 0c0-1-2-4-2-4Z" /></>,
   filter: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 8v8m5-8v8m5-8v8" /></>,
+  tire: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4" /><path d="m8 4 2 3m6-3-2 3m6 1-3 2m3 6-3-2m-1 6-2-3m-6 3 2-3m-6-1 3-2m-3-6 3 2" /></>,
+  wiper: <><path d="M3 16 6 5h12l3 11H3Zm9 0 5-8M8 20h8" /><path d="M5 12a14 14 0 0 1 14 0" /></>,
   brakes: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="m12 3 2 4m7 5-4 2m-5 7-2-4m-7-5 4-2" /></>,
   climate: <><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9 4l3 3 3-3M9 20l3-3 3 3M4 10l4-1-1-4m13 9-4 1 1 4M4 14l4 1-1 4m13-9-4-1 1-4" /></>,
   engine: <><path d="M5 9h3l2-3h7v4h4v8h-4l-2 2H8l-3-3V9Zm-3 1v6M8 3h7m-4 0v3" /><path d="m12 10-2 4h5l-2 3" /></>,

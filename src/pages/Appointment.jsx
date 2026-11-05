@@ -1,19 +1,17 @@
 import { useState } from "react";
+import { useLocation } from "react-router-dom";
+import { SERVICE_CATEGORIES, SERVICES, getService, getServiceSelection } from "../../shared/services.js";
 import { localDateString, validateAppointment } from "../utils/appointmentValidation";
 import "../styles/Appointment.css";
-
-const services = [
-  "Oil Change", "Air Filter Change", "Brake Repairs",
-  "AC & Heating Repair", "Engine Diagnostics", "Other / Not Sure",
-];
 
 const emptyForm = {
   name: "", email: "", phone: "", vehicle: "", service: "",
   date: "", time: "", notes: "",
 };
 
-function Appointment() {
-  const [form, setForm] = useState(emptyForm);
+function AppointmentForm({ initialService }) {
+  const [form, setForm] = useState(() => ({ ...emptyForm, service: initialService }));
+  const selectedService = getService(form.service);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(null);
   const [sending, setSending] = useState(false);
@@ -93,13 +91,25 @@ function Appointment() {
         <label className="appointment-field">
           Vehicle <input name="vehicle" maxLength="120" placeholder="2018 Honda Civic" value={form.vehicle} onChange={handleChange} required />
         </label>
-        <label className="appointment-field">
+        <label className="appointment-field appointment-wide">
           Service needed
-          <select name="service" value={form.service} onChange={handleChange} required>
+          <select name="service" value={form.service} onChange={handleChange} required aria-describedby={selectedService?.provisional ? "appointment-service-note" : undefined}>
             <option value="">Select a service</option>
-            {services.map((service) => <option key={service} value={service}>{service}</option>)}
+            {SERVICE_CATEGORIES.map((category) => (
+              <optgroup label={category.label} key={category.id}>
+                {SERVICES.filter((service) => service.category === category.id).map((service) => (
+                  <option key={service.name} value={service.name}>{service.name}{service.provisional ? " (provisional)" : ""}</option>
+                ))}
+              </optgroup>
+            ))}
           </select>
         </label>
+        {selectedService?.provisional && (
+          <p className="appointment-service-note appointment-wide" id="appointment-service-note" role="status">
+            <strong>Availability to be confirmed.</strong> {selectedService.name} is a provisional service option.
+            Edward will need to confirm whether the shop can provide it before your appointment is approved.
+          </p>
+        )}
         <label className="appointment-field">
           Preferred date <input name="date" type="date" min={localDateString()} value={form.date} onChange={handleChange} required />
         </label>
@@ -123,7 +133,7 @@ function Appointment() {
             <dt>Customer</dt><dd>{preview.name}</dd>
             <dt>Contact</dt><dd>{preview.email} · {preview.phone}</dd>
             <dt>Vehicle</dt><dd>{preview.vehicle}</dd>
-            <dt>Service</dt><dd>{preview.service}</dd>
+            <dt>Service</dt><dd>{preview.service}{getService(preview.service)?.provisional && <span className="appointment-provisional"> · Provisional — availability to be confirmed</span>}</dd>
             <dt>Preferred date and time</dt><dd>{preview.date} at {preview.time}</dd>
             {preview.notes.trim() && <><dt>Notes</dt><dd>{preview.notes}</dd></>}
           </dl>
@@ -153,4 +163,10 @@ function Appointment() {
   );
 }
 
-export default Appointment;
+export default function Appointment() {
+  const { search } = useLocation();
+  const initialService = getServiceSelection(search);
+  // A new service link (including Back/Forward on the same route) starts a
+  // matching request and discards any preview for the previous selection.
+  return <AppointmentForm key={initialService} initialService={initialService} />;
+}

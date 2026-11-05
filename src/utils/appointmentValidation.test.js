@@ -9,12 +9,48 @@ const request = {
   time: "10:30", notes: "Brake noise",
 };
 
+// Keep this contract explicit: deriving it from the catalog would miss a service
+// accidentally removed from both the dropdown and its validation.
+const requiredServices = [
+  "Oil Change",
+  "Tire Rotation",
+  "Cabin Air Filter Replacement",
+  "Engine Air Filter Replacement",
+  "Wiper Blade Replacement",
+  "Brake Repairs",
+  "AC & Heating Repair",
+  "Engine Diagnostics",
+  "Other / Not Sure",
+];
+
 test("formats local dates without a UTC offset", () => {
   assert.equal(localDateString(now), "2026-11-03");
 });
 
 test("accepts a valid appointment request", () => {
   assert.equal(validateAppointment(request, now), null);
+});
+
+for (const service of requiredServices) {
+  test(`accepts the appointment service ${service}`, () => {
+    assert.equal(validateAppointment({ ...request, service }, now), null);
+  });
+}
+
+test("accepts the legacy Air Filter Change service", () => {
+  assert.equal(validateAppointment({ ...request, service: "Air Filter Change" }, now), null);
+});
+
+test("rejects unknown and incorrectly cased service names", () => {
+  for (const service of ["Custom Admin Service", "Air Filter Replacement", "Oil change", "__proto__"]) {
+    assert.match(validateAppointment({ ...request, service }, now), /service/i);
+  }
+});
+
+test("rejects missing or non-string service selections", () => {
+  for (const service of ["", " ", null, undefined, 42, true, {}, [], ["Oil Change"]]) {
+    assert.match(validateAppointment({ ...request, service }, now), /service/i);
+  }
 });
 
 test("requires contact information", () => {

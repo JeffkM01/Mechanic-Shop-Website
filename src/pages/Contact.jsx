@@ -68,7 +68,7 @@ export default function Contact() {
 
       <section className="site-container contact-help section-pad">
         <Icon name="wrench" />
-        <div><h2>Not sure where to start?</h2><p>Get to know our five core services and find the right starting point for your vehicle.</p></div>
+        <div><h2>Not sure where to start?</h2><p>Explore basic maintenance and repairs & diagnostics to find the right starting point for your vehicle.</p></div>
         <Link className="text-link" to="/services">Explore services <Icon name="arrow" /></Link>
       </section>
       <BookingBanner />
