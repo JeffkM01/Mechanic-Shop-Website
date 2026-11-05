@@ -1,66 +1,29 @@
 import { useEffect, useState } from "react";
 import "../styles/MechanicDashboard.css";
+import useMechanicSession from "../hooks/useMechanicSession";
 
-async function mechanicRequest(path, { method = "GET", body, csrfToken } = {}) {
-  const response = await fetch(`/api/mechanic${path}`, {
-    method,
-    credentials: "same-origin",
-    headers: {
-      ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(csrfToken ? { "X-Mechanic-CSRF": csrfToken } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error || `Request failed (${response.status}).`);
-    error.status = response.status;
-    throw error;
-  }
-  return data;
-}
-
-function MechanicDashboard() {
-  const [checkingSession, setCheckingSession] = useState(true);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [csrfToken, setCsrfToken] = useState("");
+function MechanicDashboardContent({ auth }) {
+  const { session, checking: checkingSession, message, request: mechanicRequest,
+    signIn: authenticate, signOut: logout, logoutPending } = auth;
+  const authenticated = !!session;
   const [password, setPassword] = useState("");
   const [signingIn, setSigningIn] = useState(false);
   const [filter, setFilter] = useState("pending");
   const [appointments, setAppointments] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    let active = true;
-    mechanicRequest("/session")
-      .then((data) => {
-        if (!active) return;
-        setCsrfToken(data.csrfToken);
-        setAuthenticated(true);
-      })
-      .catch((err) => {
-        if (active && err.status !== 401) setError("Could not reach the mechanic API. Is the backend running?");
-      })
-      .finally(() => { if (active) setCheckingSession(false); });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
     if (!authenticated) return;
     let active = true;
-    setLoading(true);
-    setError("");
     mechanicRequest(`/appointments?status=${filter}`)
       .then((data) => { if (active) setAppointments(data.appointments || []); })
       .catch((err) => {
         if (!active) return;
         if (err.status === 401) {
-          setAuthenticated(false);
-          setCsrfToken("");
           setError("Your session expired. Please sign in again.");
         } else {
           setError(err.message);
@@ -68,7 +31,7 @@ function MechanicDashboard() {
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [authenticated, filter, refreshCount]);
+  }, [authenticated, filter, refreshCount, mechanicRequest]);
 
   async function signIn(event) {
     event.preventDefault();
@@ -76,10 +39,11 @@ function MechanicDashboard() {
     setNotice("");
     setSigningIn(true);
     try {
-      const data = await mechanicRequest("/login", { method: "POST", body: { password } });
+      setLoading(true);
+      setError("");
+      setAppointments([]);
+      await authenticate(password);
       setPassword("");
-      setCsrfToken(data.csrfToken);
-      setAuthenticated(true);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -93,16 +57,15 @@ function MechanicDashboard() {
     setNotice("");
     try {
       const result = await mechanicRequest(`/appointments/${id}`, {
-        method: "PATCH", body: { status }, csrfToken,
+        method: "PATCH", body: { status },
       });
       setNotice(`Appointment ${status}. ${result.emailNotification === "queued"
         ? "A customer email has been queued for delivery."
         : "Email notifications are not configured yet."}`);
+      setLoading(true);
       setRefreshCount((count) => count + 1);
     } catch (err) {
       if (err.status === 401) {
-        setAuthenticated(false);
-        setCsrfToken("");
         setError("Your session expired. Please sign in again.");
       } else {
         setError(err.message);
@@ -114,15 +77,13 @@ function MechanicDashboard() {
 
   async function signOut() {
     setError("");
+    setAppointments([]);
+    setNotice("");
+    setPassword("");
     try {
-      await mechanicRequest("/logout", { method: "POST", csrfToken });
-      setAuthenticated(false);
-      setCsrfToken("");
-      setAppointments([]);
-      setNotice("");
-      setPassword("");
-    } catch (err) {
-      setError(err.message);
+      await logout();
+    } catch {
+      // The session hook reports revocation failures and provides a retry.
     }
   }
 
@@ -137,6 +98,7 @@ function MechanicDashboard() {
         {authenticated && <button className="mechanic-logout" type="button" onClick={signOut}>Sign out</button>}
       </header>
 
+      {message && <p className="mechanic-message" role="status">{message}</p>}
       {error && <p className="mechanic-message mechanic-error" role="alert">{error}</p>}
       {notice && <p className="mechanic-message mechanic-success" role="status">{notice}</p>}
 
@@ -145,25 +107,26 @@ function MechanicDashboard() {
       ) : !authenticated ? (
         <section className="mechanic-login">
           <h2>Staff sign in</h2>
-          <p>Use the mechanic password configured in the backend.</p>
+          <p>Sign in to manage appointment requests. Sessions expire after 20 minutes of inactivity.</p>
+          {logoutPending && <button type="button" onClick={signOut}>Retry sign out</button>}
           <form onSubmit={signIn}>
             <label htmlFor="mechanic-password">Password</label>
             <input id="mechanic-password" type="password" autoComplete="current-password"
               value={password} onChange={(e) => setPassword(e.target.value)} required />
-            <button type="submit" disabled={signingIn}>{signingIn ? "Signing in…" : "Sign in"}</button>
+            <button type="submit" disabled={signingIn || logoutPending}>{signingIn ? "Signing in…" : "Sign in"}</button>
           </form>
         </section>
       ) : (
         <section className="mechanic-workspace">
           <div className="mechanic-toolbar">
             <label htmlFor="mechanic-status">Show appointments</label>
-            <select id="mechanic-status" value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <select id="mechanic-status" value={filter} onChange={(e) => { setLoading(true); setFilter(e.target.value); }}>
               <option value="pending">Pending</option>
               <option value="confirmed">Confirmed</option>
               <option value="declined">Declined</option>
               <option value="all">All</option>
             </select>
-            <button type="button" className="mechanic-refresh" onClick={() => setRefreshCount((n) => n + 1)} disabled={loading}>
+            <button type="button" className="mechanic-refresh" onClick={() => { setLoading(true); setRefreshCount((n) => n + 1); }} disabled={loading}>
               Refresh
             </button>
           </div>
@@ -204,4 +167,8 @@ function MechanicDashboard() {
   );
 }
 
-export default MechanicDashboard;
+export default function MechanicDashboard() {
+  const auth = useMechanicSession();
+  // Discard private data and in-flight UI work on logout or revalidation.
+  return <MechanicDashboardContent key={auth.sessionKey} auth={auth} />;
+}

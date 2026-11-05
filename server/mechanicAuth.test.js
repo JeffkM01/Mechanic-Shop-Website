@@ -108,3 +108,104 @@ test("login stops responding to attempts after five failures per IP", async () =
   await auth.login(request({ password, ip: "1.2.3.4" }), rateLimited);
   assert.equal(rateLimited.code, 429);
 });
+
+const MINUTE = 60 * 1000;
+
+test("sessions expire at exactly 20 idle minutes despite background reads", async () => {
+  let clock = 1000;
+  const auth = createMechanicAuth(password, { now: () => clock });
+  const signedIn = response();
+  await auth.login(request({ password }), signedIn);
+  assert.equal(signedIn.body.idleExpiresAt, clock + 20 * MINUTE);
+  for (let minute = 1; minute < 20; minute++) {
+    clock = 1000 + minute * MINUTE;
+    const req = request({ cookie: signedIn.cookieValue });
+    assert.equal(middleware(auth.requireAuth, req).nextCalled, true);
+    const res = response();
+    auth.session(req, res);
+    assert.equal(res.body.idleExpiresAt, 1000 + 20 * MINUTE);
+  }
+  clock = 1000 + 20 * MINUTE;
+  const expired = middleware(auth.requireAuth, request({ cookie: signedIn.cookieValue }));
+  assert.equal(expired.res.code, 401);
+  assert.equal(expired.nextCalled, false);
+});
+
+test("explicit CSRF-protected activity renews idle time without extending absolute lifetime", async () => {
+  let clock = 1000;
+  const auth = createMechanicAuth(password, { now: () => clock });
+  const signedIn = response();
+  await auth.login(request({ password }), signedIn);
+  const absolute = signedIn.body.expiresAt;
+  // Stay active for nearly eight hours, with activity every 19 minutes.
+  while (clock + 19 * MINUTE < absolute) {
+    clock += 19 * MINUTE;
+    const req = request({ cookie: signedIn.cookieValue, csrf: signedIn.body.csrfToken });
+    assert.equal(middleware(auth.requireAuth, req).nextCalled, true);
+    assert.equal(middleware(auth.requireCsrf, req).nextCalled, true);
+    const res = response();
+    auth.activity(req, res);
+    assert.equal(res.body.idleExpiresAt, Math.min(clock + 20 * MINUTE, absolute));
+    assert.equal(res.body.expiresAt, absolute);
+  }
+  clock = absolute;
+  assert.equal(middleware(auth.requireAuth, request({ cookie: signedIn.cookieValue })).res.code, 401);
+});
+
+test("expired sessions cannot be revived by activity and require a fresh login", async () => {
+  let clock = 1000;
+  const auth = createMechanicAuth(password, { now: () => clock });
+  const old = response();
+  await auth.login(request({ password }), old);
+  clock += 20 * MINUTE;
+  const req = request({ cookie: old.cookieValue, csrf: old.body.csrfToken });
+  assert.equal(middleware(auth.requireAuth, req).nextCalled, false);
+  const fresh = response();
+  await auth.login(request({ password }), fresh);
+  assert.notEqual(fresh.cookieValue, old.cookieValue);
+  assert.equal(middleware(auth.requireAuth, request({ cookie: old.cookieValue })).res.code, 401);
+  assert.equal(middleware(auth.requireAuth, request({ cookie: fresh.cookieValue })).nextCalled, true);
+});
+
+test("HTTP private reads and writes are denied after idle expiry and logout", async (t) => {
+  const { default: express } = await import("express");
+  let clock = 1000;
+  const auth = createMechanicAuth(password, { now: () => clock });
+  const app = express();
+  app.use(express.json());
+  app.post("/login", auth.login);
+  app.get("/session", auth.requireAuth, auth.session);
+  app.post("/activity", auth.requireAuth, auth.requireCsrf, auth.activity);
+  app.post("/logout", auth.requireAuth, auth.requireCsrf, auth.logout);
+  app.get("/appointments", auth.requireAuth, (_req, res) => res.json({ appointments: [{ name: "Private Customer" }] }));
+  app.patch("/appointments/1", auth.requireAuth, auth.requireCsrf, (_req, res) => res.json({ status: "confirmed" }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  async function login() {
+    const res = await fetch(`${url}/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    return { cookie: res.headers.get("set-cookie").split(";")[0], "X-Mechanic-CSRF": data.csrfToken };
+  }
+  const headers = await login();
+  assert.equal((await fetch(`${url}/appointments`, { headers })).status, 200);
+  clock += 19 * MINUTE;
+  assert.equal((await fetch(`${url}/activity`, { method: "POST", headers: { cookie: headers.cookie } })).status, 403);
+  clock += MINUTE; // A failed CSRF check cannot keep the session alive.
+  for (const [path, method] of [["/appointments", "GET"], ["/appointments/1", "PATCH"], ["/session", "GET"], ["/activity", "POST"]]) {
+    const denied = await fetch(url + path, { method, headers });
+    assert.equal(denied.status, 401);
+    assert.doesNotMatch(await denied.text(), /Private Customer/);
+  }
+  const fresh = await login();
+  assert.equal((await fetch(`${url}/logout`, { method: "POST", headers: { cookie: fresh.cookie } })).status, 403);
+  assert.equal((await fetch(`${url}/appointments`, { headers: fresh })).status, 200);
+  const out = await fetch(`${url}/logout`, { method: "POST", headers: fresh });
+  assert.equal(out.status, 200);
+  assert.match(out.headers.get("set-cookie"), /mechanic_session=;/);
+  for (const [path, method] of [["/appointments", "GET"], ["/appointments/1", "PATCH"], ["/activity", "POST"], ["/session", "GET"]]) {
+    assert.equal((await fetch(url + path, { method, headers: fresh })).status, 401);
+  }
+});
