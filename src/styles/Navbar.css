@@ -1,27 +1,39 @@
-.nav-container{
-    border: 1px solid #ccc;
-    padding: 20px;
-    margin: 0px;
-    border-radius: 10px;
+.site-header { position: relative; z-index: 20; background: #fff; }
+.header-note { background: var(--navy); color: #c3cdd3; font-size: 9px; font-weight: 650; letter-spacing: 0.12em; }
+.header-note > div { display: flex; justify-content: space-between; align-items: center; min-height: 33px; gap: 20px; }
+.header-note span { display: flex; align-items: center; gap: 9px; }
+.header-note .icon { color: var(--orange); width: 14px; height: 14px; }
+.nav-container { display: flex; align-items: center; justify-content: space-between; gap: 32px; min-height: 97px; }
+.shop-brand { display: inline-flex; align-items: center; gap: 12px; color: var(--navy); text-decoration: none; flex-shrink: 0; }
+.shop-brand-mark { display: grid; place-items: center; width: 46px; height: 46px; background: var(--orange); border-radius: 6px; transform: rotate(-5deg); }
+.shop-brand-mark .icon { width: 29px; height: 29px; transform: rotate(5deg); }
+.shop-brand strong { display: block; font-size: 30px; font-weight: 850; line-height: 0.95; letter-spacing: -0.06em; }
+.shop-brand-dot { color: #bf4a1c; }
+.shop-brand small { display: block; font-size: 8px; font-weight: 800; letter-spacing: 0.27em; margin-top: 6px; }
+.nav-card { display: flex; align-items: center; gap: 30px; }
+.nav-card > a:not(.button) { display: flex; align-items: center; min-height: 48px; font-size: 12px; font-weight: 650; text-decoration: none; position: relative; white-space: nowrap; }
+.nav-card > a:not(.button)::after { content: ""; position: absolute; bottom: 4px; height: 2px; width: 0; background: #c94a12; transition: width 150ms; }
+.nav-card > a.active::after, .nav-card > a:not(.button):hover::after { width: 22px; }
+.nav-booking { margin-left: 10px; }
+.nav-toggle { display: none; }
+@media (max-width: 1000px) {
+  .nav-card { gap: 20px; }
+  .nav-card > a:not(.button) { font-size: 11px; }
+  .nav-booking { padding: 15px; gap: 10px; margin: 0; }
+  .nav-container { gap: 20px; }
 }
-
-/* Individual card layout */
-.nav-card {
-    display: flex;
-    flex-direction: row; /* Forces links to stay horizontally side-by-side */
-    gap: 30px;           /* Spaces out your links beautifully */ 
-}
-
-/*links in nav-card class*/
-.nav-card a{
-    font-size: 20px;
-    font-weight: 400;
-    transition: font-weight 0.2s ease;
-    text-decoration: none;
-}
-
-/*hover over links*/
-.nav-card a:hover{
-    color: black;
-    font-weight: 700;
+@media (max-width: 760px) {
+  .header-note > div { min-height: 30px; }
+  .header-note span:last-child { display: none; }
+  .header-note { font-size: 8px; }
+  .nav-container { min-height: 82px; }
+  .shop-brand-mark { width: 40px; height: 40px; }
+  .shop-brand strong { font-size: 26px; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; width: 46px; height: 46px; background: white; color: var(--navy); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+  .nav-toggle span { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
+  .nav-card { display: none; position: absolute; top: 100%; left: 0; width: 100%; padding: 8px 20px 24px; background: #fff; border-top: 1px solid var(--line); box-shadow: 0 12px 18px #101f2c14; }
+  .nav-card.is-open { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+  .nav-card > a:not(.button) { min-height: 48px; font-size: 14px; }
+  .nav-card > a:not(.button)::after { bottom: 6px; }
+  .nav-booking { margin-top: 10px; }
 }
