@@ -9,7 +9,7 @@ const limits = {
 };
 
 // Only copy fields we explicitly expect: no client-controlled ID or approval status.
-export function prepareAppointment(body, now = new Date()) {
+export function prepareAppointment(body, now = new Date(), options) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { error: "Please provide a valid appointment request." };
   }
@@ -26,6 +26,6 @@ export function prepareAppointment(body, now = new Date()) {
     }
   }
 
-  const error = validateAppointment(data, now);
+  const error = validateAppointment(data, now, options);
   return error ? { error } : { value: data };
 }
