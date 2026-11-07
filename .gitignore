@@ -31,3 +31,6 @@ dist-ssr
 
 # Extracted Phase 3 package
 /Mechanic_Shop_Phase3_Dashboard/
+# Browser test output
+/playwright-report/
+/test-results/

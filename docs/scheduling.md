@@ -81,6 +81,7 @@ This removes duplicate **logical confirmation paths**. Existing SMTP retry seman
 | Method and route | Access / purpose |
 | --- | --- |
 | `GET /api/availability?service=Oil%20Change&date=YYYY-MM-DD` | Public sanitized slots and policy metadata; no customer fields, IDs, counts, or block reasons |
+| `GET /api/availability/calendar?service=Oil%20Change&month=YYYY-MM` | Public month summary and shop-local booking bounds; `month` is optional and defaults to the current shop-local month |
 | `POST /api/appointments` | Existing public request body; validates again and reserves atomically; 201 only after the record saves |
 | `PATCH /api/mechanic/appointments/:id` | Existing mechanic session + CSRF; `{status:"confirmed"}` rechecks and acquires capacity; `{status:"declined"}` releases |
 | `GET /api/mechanic/scheduling/settings` | Mechanic session; `{revision, settings}` |
@@ -90,11 +91,51 @@ This removes duplicate **logical confirmation paths**. Existing SMTP retry seman
 
 Availability returns `{date,service,timezone,durationMinutes,slots,policy,settingsProvisional,message}`. Slots contain only `{time,startAt,endAt,durationMinutes}`. Closed/out-of-window/occupied dates return an empty slots array; malformed dates/services return 400. Booking/approval conflicts return 409 with a safe message and error code. Busy/database failures fail closed. The public availability response exposes no names, phones, emails, notes, appointment identifiers, or private blocked-period reasons. The existing POST response still returns the submitting customer’s own reference ID.
 
+### Month summaries
+
+The calendar endpoint supplements the existing single-day endpoint; it does not change the booking or approval rules. A valid shared-catalog service is required. Legacy service aliases such as `Air Filter Change` are accepted and the response uses the canonical name. A supplied month must be one `YYYY-MM` value within the months touched by the current booking window. Malformed, duplicate, or out-of-range month parameters return 400.
+
+The response contains only:
+
+```js
+{
+  service, month, timezone,
+  today, firstDate, lastDate,
+  durationMinutes, policy, settingsProvisional,
+  days: [{ date, available }],
+  generatedAt
+}
+```
+
+`today` and `firstDate` are the server clock's current date in the persisted shop timezone. `lastDate` is that date plus the currently configured `bookingHorizonDays`, inclusive; the UI does not assume 14 days. Dates use `YYYY-MM-DD`, `month` uses `YYYY-MM`, and `generatedAt` is an ISO UTC timestamp. Date-only arithmetic uses UTC calendar operations so leap dates, month boundaries, daylight-saving changes, and a customer timezone different from the shop cannot shift the selected date. These UTC operations do not reinterpret shop appointment times as UTC.
+
+`days` includes only dates both in the requested month and within `[firstDate, lastDate]`, with at most 31 entries. A date is available only when the existing slot calculator finds at least one start time after applying service duration, notice, hours, breaks, closures, blocks, buffers, provisional holds, confirmed appointments, and capacity. The summary uses one scheduling-state snapshot and one occupancy query for the whole month, rather than a MongoDB query per date. It exposes no slots, customer information, appointment IDs/counts, reservations, or private block reasons. `false` means no currently available start times; it does not identify whether the day is closed, occupied, blocked, or outside the notice window.
+
+The shared `policy` fields are `minimumNoticeHours`, `bookingHorizonDays`, `pendingHoldHours`, `startIncrementMinutes`, `bufferMinutes`, `automaticBookingEnabled`, `businessHoursVerified`, and `capacityVerified`. `settingsProvisional` is true when hours or capacity have not been verified. Calendar reads do not change booking settings or reservations; the existing first-read initialization and compatibility correction described above still apply.
+
+Both availability endpoints send `Cache-Control: no-store`. A displayed result is a point-in-time observation, not a reservation or promise. The existing POST endpoint revalidates and atomically reserves against the latest settings and occupancy even if availability was fetched immediately before submission.
+
 The future dashboard can edit `weeklyHours` (0=Sunday … 6=Saturday, arrays of `{start,end}`), daily `breaks`, `closedDates`, `blockedPeriods`, capacity, notices, horizon, grid, buffers, hold length, service rules, and verification flags without a schema redesign. Unknown keys, invalid types, unsafe ranges, and invalid intervals are rejected. Working intervals cannot cross local midnight; use separate per-day intervals. Settings APIs are ready, but no new staff settings screen or rescheduling/cancellation UI is included.
 
-## Minimal customer compatibility
+## Customer calendar and booking flow
 
-The existing appointment page retains its service deep links and review/send flow. After service/date selection it loads available request times instead of accepting unrestricted free-text times, shows timezone and estimated duration, explains placeholder settings and pending holds, cancels stale fetches, and refreshes after a 409. This is a small compatibility step, not the future calendar UI. Shared input validation has an opt-in scheduling-authoritative mode so browser-local time and the old Sunday rule cannot override persisted shop settings; the API remains authoritative.
+The appointment page uses four steps: choose a service, choose a date/time, enter customer/vehicle details, and review/send. Service categories, accepted names, provisional labels, and service-card preselection come from the existing shared catalog. Changing the service clears the selected date/time; changing the date clears the time. Customer details remain in React memory through these changes and conflict recovery, without writing them to browser storage.
+
+The month calendar distinguishes today, selected, available, unavailable, and loading dates using text/symbols as well as color. Dates cannot be selected until the API says they are available. Month controls stay inside server-provided bounds. The calendar has weekday headings, labeled date buttons, visible focus, loading/error announcements, and keyboard movement: arrow keys by day/week, Home/End within the week, and Page Up/Page Down between supported months. Desktop layouts place the calendar and times alongside one another; narrower layouts stack them.
+
+Selecting a day loads the unchanged single-day endpoint. Only its returned slots appear as selectable Morning/Afternoon buttons in 12-hour format. No time is selected automatically. The shop timezone and estimated duration appear beside the choices and in the review summary; durations are not guaranteed repair completion times. An empty day displays: “No appointment times are available for this date. Please choose another day.” The UI does not infer that it is fully booked.
+
+`useBookingAvailability` makes one bounded month request instead of requesting every day separately, plus a single selected-day request when needed. It keeps a short, 30-second in-memory cache for navigation, bypasses HTTP caches, aborts superseded requests, and ignores late responses for old services, dates, or views. Calendar and day requests have separate controllers; there is no concurrent fan-out across dates. Loading and failure states offer explicit retry controls, and returning focus to the window refreshes the calendar. Availability is always presented as subject to change.
+
+Review validates the existing customer fields and performs a fresh, uncached day check before showing the full service/date/time/timezone/duration/customer/vehicle/notes summary. **Edit Details** returns to the form. **Send Appointment Request** is the only submission action and performs another fresh day check before the existing `POST /api/appointments`. Client checks improve recovery; the server remains authoritative and applies its atomic reservation protection. Shared validation uses its scheduling-authoritative mode so the browser's current date/time and old Sunday restriction cannot override saved shop rules.
+
+The review also snapshots the selected slot's UTC start/end, timezone, and estimated duration. If the fresh send-time check returns different values, the page stops before POST, keeps the customer's details, and requires review of the updated scheduling information. An unchanged wall-clock label such as 8:00 AM cannot silently approve a different timezone or booking duration.
+
+A missing slot or HTTP 409 clears the selected time and review, refreshes calendar/day availability, explains the conflict, and preserves contact information, vehicle details, and notes. The customer can choose another available time and review again. Errors do not silently submit or automatically retry a booking.
+
+Successful responses are displayed according to the saved server status. Pending requests say: “Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet.” The page shows the reference ID and, when supplied, the hold expiration formatted in the shop timezone, explaining that the request remains on file after expiry. Confirmed wording is shown only for an explicit `confirmed` server response. Existing mechanic review, MongoDB persistence, session/CSRF protection, and email queue/retry behavior are preserved.
+
+The calendar does not edit business settings or enable automatic booking. **Automatic booking remains disabled by default**, hours/capacity remain unverified placeholders, and provisional services remain subject to Edward's confirmation. Edward must verify real hours, capacity, service availability, and booking-duration estimates before enabling eligible Basic Maintenance automation through the existing protected settings workflow. Repairs & Diagnostics always require mechanic approval.
 
 ## Development and validation
 
@@ -102,11 +143,22 @@ Use the existing isolated checkout, Node/npm, and local MongoDB prepared by onbo
 
 ```sh
 npm test --prefix server
-node --test shared/services.test.js src/utils/appointmentValidation.test.js
+npm test
 npm run lint
 npm run build
+npm run test:browser
 ```
 
 `npm test --prefix server` now includes real MongoDB integration tests. They require local MongoDB at `mongodb://127.0.0.1:27017` or `TEST_MONGODB_URI`; they fail clearly if it is unavailable instead of silently skipping. Each test creates and drops **only** its own random `eds_scheduling_test_<UUID>` database. They never use or drop the application database. Critical concurrency tests instantiate two independent coordinators against the same real models.
+
+`npm test` runs the existing shared service/appointment-validation tests and the new pure date/calendar utility tests using Node's test runner, with no added unit-test framework. The calendar tests cover weekday alignment, leap dates, month/year boundaries, timezone conversion, horizons, and 12-hour labels. Backend month-API regressions compare summaries with single-day slots, count bounded database reads, verify dynamic horizons/leap dates/both daylight-saving transitions, and check privacy, invalid input, public access, and unchanged stored settings.
+
+`npm run test:browser` uses the development-only `@playwright/test` and `axe-core` packages and runs both browser specs. Install Chromium once with `npx playwright install chromium` if no browser is available; the config also uses `/usr/bin/chromium` when installed, or `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for an explicit path. Playwright starts Vite on port 5174 and runs Chromium at desktop (1440×1000), tablet (768×1024), and mobile (390×844) widths. Firefox and WebKit are outside this automated browser coverage.
+
+`tests/booking-calendar.spec.js` mocks availability and booking responses, requires no MongoDB or SMTP, and sends no real customer requests or emails. Run only these tests with `npm run test:browser -- tests/booking-calendar.spec.js`. They exercise API-provided slots, resets, loading/empty/error/retry states, stale responses, request counts, keyboard navigation, explicit review/send, pending/confirmed messages, scheduling-metadata changes between review/send, conflict recovery with preserved details, overflow/touch-target checks, and an automated WCAG accessibility audit.
+
+`tests/booking-calendar.integration.spec.js` requires the same local MongoDB or `TEST_MONGODB_URI` as the backend integration suite. Each test owns a random `eds_calendar_browser_test_<UUID>` database, starts an isolated Express API with notifications explicitly disabled, and routes all browser API traffic to that server. It never loads the application's `.env`, touches the normal shop database, or creates an email transport. It verifies a customer request remains pending and persists correctly, appears in the existing mechanic dashboard, receives a CSRF-protected manual confirmation, and becomes inaccessible after logout (private reads return 401). It also verifies saved scheduling settings remain unchanged. Cleanup verifies the database's random test prefix before dropping only that test database.
+
+The completed calendar verification passed 109 backend tests, 33 frontend/shared tests, 54 mocked browser cases, and three isolated full-stack browser cases, with clean ESLint and production build results. Browser tests use synthetic customers only; external Brevo delivery remains untested, and neither suite enables automatic booking or changes real business settings.
 
 Start the API with `cd server && npm start`, and Vite from the root with `npm run dev -- --host 0.0.0.0 --port 5173 --strictPort`. Keep SMTP unset for synthetic local checks. External Brevo delivery is not tested here; its dispatcher/session protections are retained and notification tests cover pending/automatic receipts and retry behavior.

@@ -188,21 +188,69 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     const slots = candidates.filter(slot => canFit({ ...slot, bufferMinutes: state.settings.bufferMinutes }, current.occupancies, state.settings.capacity));
     const definition = getService(service);
     return {
-      date, service: definition.name, timezone: state.settings.timezone,
-      durationMinutes: state.settings.serviceRules[definition.name].durationMinutes,
+      date,
+      ...publicAvailabilityMetadata(state.settings, definition),
       slots,
-      policy: {
-        minimumNoticeHours: state.settings.minimumNoticeHours,
-        bookingHorizonDays: state.settings.bookingHorizonDays,
-        pendingHoldHours: state.settings.pendingHoldHours,
-        startIncrementMinutes: state.settings.startIncrementMinutes,
-        bufferMinutes: state.settings.bufferMinutes,
-        automaticBookingEnabled: state.settings.automaticBookingEnabled,
-        businessHoursVerified: state.settings.businessHoursVerified,
-        capacityVerified: state.settings.capacityVerified,
-      },
-      settingsProvisional: !state.settings.businessHoursVerified || !state.settings.capacityVerified,
       message: "Durations are estimates for booking, not guaranteed repair completion times. Requests require approval unless verified automatic booking is enabled and eligible.",
+    };
+  }
+
+  function publicAvailabilityMetadata(settings, definition) {
+    return {
+      service: definition.name,
+      timezone: settings.timezone,
+      durationMinutes: settings.serviceRules[definition.name].durationMinutes,
+      policy: {
+        minimumNoticeHours: settings.minimumNoticeHours,
+        bookingHorizonDays: settings.bookingHorizonDays,
+        pendingHoldHours: settings.pendingHoldHours,
+        startIncrementMinutes: settings.startIncrementMinutes,
+        bufferMinutes: settings.bufferMinutes,
+        automaticBookingEnabled: settings.automaticBookingEnabled,
+        businessHoursVerified: settings.businessHoursVerified,
+        capacityVerified: settings.capacityVerified,
+      },
+      settingsProvisional: !settings.businessHoursVerified || !settings.capacityVerified,
+    };
+  }
+
+  async function getCalendarAvailability(service, requestedMonth) {
+    const definition = getService(service);
+    if (!definition) throw new SchedulingError(400, "Choose a listed service.", "INVALID_SCHEDULING_INPUT");
+    if (requestedMonth !== undefined && (typeof requestedMonth !== "string"
+      || !/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth))) {
+      throw new SchedulingError(400, "Month must use YYYY-MM.", "INVALID_MONTH");
+    }
+    const state = await readState();
+    const clock = new Date(now());
+    const today = dateInZone(clock, state.settings.timezone);
+    // These are calendar dates, not elapsed shop-local days: advancing UTC
+    // midnight preserves leap dates and never shifts at a daylight-saving change.
+    const horizon = new Date(`${today}T00:00:00.000Z`);
+    horizon.setUTCDate(horizon.getUTCDate() + state.settings.bookingHorizonDays);
+    const lastDate = horizon.toISOString().slice(0, 10);
+    const month = requestedMonth ?? today.slice(0, 7);
+    if (month < today.slice(0, 7) || month > lastDate.slice(0, 7)) {
+      throw new SchedulingError(400, "Choose a month within the booking horizon.", "MONTH_OUT_OF_RANGE");
+    }
+    const current = await context(state, clock);
+    const cursor = new Date(`${month}-01T00:00:00.000Z`);
+    const days = [];
+    for (let index = 0; index < 31; index++) {
+      const date = cursor.toISOString().slice(0, 10);
+      if (!date.startsWith(`${month}-`) || date > lastDate) break;
+      if (date >= today) {
+        days.push({
+          date,
+          available: calculateSlots(state.settings, definition.name, date, current.occupancies, clock).length > 0,
+        });
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return {
+      ...publicAvailabilityMetadata(state.settings, definition),
+      month, today, firstDate: today, lastDate, days,
+      generatedAt: clock.toISOString(),
     };
   }
 
@@ -322,5 +370,5 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return { removed: true };
   }
 
-  return { getSettings, updateSettings, getAvailability, createAppointment, reviewAppointment, addBlockedPeriod, removeBlockedPeriod };
+  return { getSettings, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, addBlockedPeriod, removeBlockedPeriod };
 }
