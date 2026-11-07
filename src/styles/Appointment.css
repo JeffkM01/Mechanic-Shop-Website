@@ -137,3 +137,17 @@
 .appointment-field { min-width: 0; }
 .appointment-service-note { padding: 14px 16px; margin: 0; background: #fff5ed; border-left: 3px solid #f37438; border-radius: 4px; color: #744322; font-size: .875rem; line-height: 1.6; }
 .appointment-provisional { color: #744322; }
+
+.appointment-availability {
+  padding: 14px 16px;
+  border-left: 3px solid #f37438;
+  border-radius: 4px;
+  background: #fff;
+  font-size: .875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.appointment-availability p { margin: 0 0 8px; }
+.appointment-availability p:last-child { margin-bottom: 0; }
+.appointment-field select:disabled { background: #e8edf1; color: #526273; }

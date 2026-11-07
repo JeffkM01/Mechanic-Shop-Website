@@ -97,3 +97,21 @@ test("old appointments without queue flags are skipped", async () => {
   await service.processPending();
   assert.equal(sent.length, 0);
 });
+
+test("pending scheduling receipts explain expiring holds without a false confirmation", () => {
+  const email = buildEmail("requestCustomer", { ...sample, scheduling: { timezone: "America/Chicago", durationMinutes: 60, holdExpiresAt: "2026-11-08T12:00:00Z" } }, { from: config.MAIL_FROM, mechanicEmail: config.MECHANIC_NOTIFICATION_EMAIL });
+  assert.match(email.text, /PENDING/);
+  assert.match(email.text, /request remains on file after expiry/);
+  assert.match(email.text, /not a guaranteed repair completion time/);
+  assert.doesNotMatch(email.text, /CONFIRMED/);
+});
+
+test("verified automatic confirmation receipts agree with confirmed status", () => {
+  const appointment = { ...sample, status: "confirmed", scheduling: { confirmationSource: "automatic", timezone: "America/Chicago" } };
+  const options = { from: config.MAIL_FROM, mechanicEmail: config.MECHANIC_NOTIFICATION_EMAIL };
+  for (const kind of ["requestCustomer", "requestMechanic", "decisionCustomer"]) {
+    const email = buildEmail(kind, appointment, options);
+    assert.match(email.text, /CONFIRMED/);
+    assert.doesNotMatch(email.text, /PENDING|NOT been approved/);
+  }
+});

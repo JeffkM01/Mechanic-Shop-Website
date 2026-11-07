@@ -75,3 +75,10 @@ test("rejects malformed date and time", () => {
   assert.match(validateAppointment({ ...request, date: "2026-02-30" }, now), /valid date/);
   assert.match(validateAppointment({ ...request, time: "99:99" }, now), /valid time/);
 });
+
+test("scheduling-authoritative validation leaves shop calendar decisions to the server", () => {
+  assert.equal(validateAppointment({ ...request, date: "2026-11-08" }, now, { schedulingAuthoritative: true }), null);
+  assert.equal(validateAppointment({ ...request, date: "2026-11-02" }, now, { schedulingAuthoritative: true }), null);
+  assert.match(validateAppointment({ ...request, date: "2026-02-30" }, now, { schedulingAuthoritative: true }), /valid date/);
+  assert.match(validateAppointment({ ...request, time: "25:00" }, now, { schedulingAuthoritative: true }), /valid time/);
+});
