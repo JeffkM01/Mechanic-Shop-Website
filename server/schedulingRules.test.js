@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { SERVICES } from "../shared/services.js";
 import {
   SchedulingError, defaultSettings, validateSettings, mergeSettings,
   localDateTimeToUtc, dateInZone, buildCandidate, calculateSlots,
@@ -39,6 +40,25 @@ test("settings updates merge individual days and service rules without changing 
   assert.equal(settings.blockedPeriods[0].startAt, "2026-11-09T15:00:00.000Z");
 });
 
+test("every Repairs & Diagnostics service requires approval in defaults and settings updates", () => {
+  for (const { name, category } of SERVICES) {
+    const settings = defaultSettings();
+    assert.equal(settings.serviceRules[name].requiresApproval, category === "repairs", name);
+    if (category === "repairs") {
+      settings.serviceRules[name].requiresApproval = false;
+      assert.throws(() => validateSettings(settings), /requires mechanic approval/, name);
+      assert.throws(() => mergeSettings(defaultSettings(), {
+        automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true,
+        serviceRules: { [name]: { requiresApproval: false } },
+      }), /requires mechanic approval/, name);
+      assert.equal(buildCandidate(defaultSettings(), name, MONDAY, "08:00", NOW).requiresApproval, true, name);
+    } else {
+      const updated = mergeSettings(settings, { serviceRules: { [name]: { requiresApproval: false } } });
+      assert.equal(updated.serviceRules[name].requiresApproval, false, name);
+    }
+  }
+});
+
 test("strict settings validation rejects unknown keys and malformed nested configuration", () => {
   for (const patch of [
     { surprise: true }, { timezone: "Mars/Chicago" }, { capacity: 0 },
@@ -52,9 +72,6 @@ test("strict settings validation rejects unknown keys and malformed nested confi
     { serviceRules: { "Air Filter Change": { durationMinutes: 30 } } },
     { serviceRules: { "Oil Change": { durationMinutes: 0 } } },
     { serviceRules: { "Oil Change": { invented: true } } },
-    { serviceRules: { "Brake Repairs": { requiresApproval: false } } },
-    { serviceRules: { "AC & Heating Repair": { requiresApproval: false } } },
-    { serviceRules: { "Other / Not Sure": { requiresApproval: false } } },
     { blockedPeriods: [{ id: "x", startAt: "2026-11-09T12:00:00-06:00", endAt: "2026-11-09T19:00:00Z" }] },
     { blockedPeriods: [{ id: "x", startAt: "2026-02-30T12:00:00Z", endAt: "2026-03-01T19:00:00Z" }] },
     { blockedPeriods: [{ id: "x", startAt: "2026-11-09T19:00:00Z", endAt: "2026-11-09T18:00:00Z" }] },
@@ -157,6 +174,42 @@ test("approval allows already held times inside notice and beyond a changed hori
   assert.doesNotThrow(() => buildCandidate(settings, "Oil Change", "2026-11-12", "08:00", nearVisit, { approval: true }));
   assert.throws(() => buildCandidate(settings, "Oil Change", MONDAY, "08:00", new Date("2026-11-09T14:00:00Z"), { approval: true }), errorCode("PAST_APPOINTMENT", 409));
   assert.throws(() => buildCandidate(settings, "Oil Change", MONDAY, "08:00", nearVisit, { approval: true, durationMinutes: -1 }), (error) => error.status === 400);
+});
+
+test("manual approval preserves legacy minutes while new bookings enforce configured increments", () => {
+  const settings = defaultSettings();
+  assert.throws(() => buildCandidate(settings, "Oil Change", MONDAY, "08:15", NOW), errorCode("INVALID_TIME_INCREMENT", 400));
+  const candidate = buildCandidate(settings, "Oil Change", MONDAY, "08:15", NOW, { approval: true });
+  assert.equal(candidate.time, "08:15");
+  assert.equal(candidate.startAt.toISOString(), "2026-11-09T14:15:00.000Z");
+  assert.equal(candidate.endAt.toISOString(), "2026-11-09T15:15:00.000Z");
+  assert.equal(candidate.occupiedUntil.toISOString(), "2026-11-09T15:30:00.000Z");
+  assert.equal(canFit(candidate, [occupancy("2026-11-09T15:00Z", "2026-11-09T16:00Z")], 1), false);
+  assert.equal(canFit(candidate, [occupancy("2026-11-09T15:30Z", "2026-11-09T16:00Z")], 1), true);
+  const hourly = mergeSettings(settings, { startIncrementMinutes: 60 });
+  assert.throws(() => buildCandidate(hourly, "Oil Change", MONDAY, "08:30", NOW), errorCode("INVALID_TIME_INCREMENT", 400));
+  assert.doesNotThrow(() => buildCandidate(hourly, "Oil Change", MONDAY, "08:30", NOW, { approval: true }));
+});
+
+test("legacy minute approval still enforces dates, times, shop hours, breaks, blocks, and future starts", () => {
+  const settings = mergeSettings(defaultSettings(), {
+    closedDates: ["2026-11-10"],
+    blockedPeriods: [{ id: "staff", startAt: "2026-11-09T16:00:00Z", endAt: "2026-11-09T17:00:00Z" }],
+  });
+  for (const [date, time, code, status] of [
+    ["2026-02-30", "08:15", "INVALID_DATE", 400],
+    [MONDAY, "08:75", "INVALID_TIME", 400],
+    ["2026-11-08", "08:15", "CLOSED_DAY", 409],
+    ["2026-11-10", "08:15", "CLOSED_DATE", 409],
+    [MONDAY, "07:45", "OUTSIDE_HOURS", 409],
+    [MONDAY, "15:55", "OUTSIDE_HOURS", 409],
+    [MONDAY, "11:15", "SHOP_BREAK", 409],
+    [MONDAY, "12:15", "SHOP_BREAK", 409],
+    [MONDAY, "09:15", "BLOCKED_PERIOD", 409],
+  ]) {
+    assert.throws(() => buildCandidate(settings, "Oil Change", date, time, NOW, { approval: true }), errorCode(code, status), `${date} ${time}`);
+  }
+  assert.throws(() => buildCandidate(settings, "Oil Change", MONDAY, "08:15", new Date("2026-11-09T14:15:00Z"), { approval: true }), errorCode("PAST_APPOINTMENT", 409));
 });
 
 test("availability returns only public slot fields and excludes occupied durations plus buffers", () => {

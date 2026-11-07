@@ -13,11 +13,12 @@ export function buildEmail(kind, appointment, { from, mechanicEmail }) {
   const details = `Reference: ${id}\nCustomer: ${appointment.name}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nRequested time: ${appointment.date} at ${appointment.time} (${timezone})${estimate}${holdNote}`;
 
   if (kind === "requestCustomer") {
+    if (automaticallyConfirmed) throw new Error("Automatically confirmed appointments use the decision notification, not a request receipt.");
     return {
       from,
       to: appointment.email,
       subject: "Ed's Auto Shop — appointment request received",
-      text: `Hello ${appointment.name},\n\n${automaticallyConfirmed ? "Your appointment has been CONFIRMED by the verified automatic booking rules." : "We received your appointment request. It is PENDING until the mechanic approves it."}\n\n${details}\n\nWe will contact you after the request is reviewed.\n\nEd's Auto Shop`,
+      text: `Hello ${appointment.name},\n\nWe received your appointment request. It is PENDING until the mechanic approves it.\n\n${details}\n\nWe will contact you after the request is reviewed.\n\nEd's Auto Shop`,
     };
   }
 

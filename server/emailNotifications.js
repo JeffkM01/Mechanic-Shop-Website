@@ -36,6 +36,19 @@ export async function createEmailNotifications({ Appointment, env = process.env,
         .sort({ createdAt: 1 }).limit(50).lean();
 
       for (const appointment of appointments) {
+        if (appointment.status === "confirmed" && appointment.scheduling?.confirmationSource === "automatic"
+          && appointment.notificationState?.requestCustomer === "pending") {
+          // Also reconcile unsent queues written by an earlier PR revision.
+          // Automatic confirmations belong to decisionCustomer only. A failed
+          // suppression write retries on the next sweep without sending twice.
+          await Appointment.updateOne({
+            _id: appointment._id,
+            status: "confirmed",
+            "scheduling.confirmationSource": "automatic",
+            "notificationState.requestCustomer": "pending",
+          }, { $set: { "notificationState.requestCustomer": "suppressed" } });
+          appointment.notificationState.requestCustomer = "suppressed";
+        }
         for (const kind of EMAIL_KINDS) {
           if (appointment.notificationState?.[kind] !== "pending") continue;
           try {

@@ -29,7 +29,7 @@ export const appointmentSchema = new mongoose.Schema({
   // Queue flags are stored with the appointment so email failures cannot undo the booking.
   // Old Phase 2/3 records have no flags and are not sent old "request received" emails.
   notificationState: {
-    requestCustomer: { type: String, enum: ["pending", "sent"], default: "pending" },
+    requestCustomer: { type: String, enum: ["pending", "sent", "suppressed"], default: "pending" },
     requestMechanic: { type: String, enum: ["pending", "sent"], default: "pending" },
     decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
   },

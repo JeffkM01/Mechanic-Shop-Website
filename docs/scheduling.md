@@ -2,7 +2,7 @@
 
 ## Safe development defaults
 
-The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop"`). Subsequent starts **preserve** saved settings. Defaults are editable placeholders, not confirmed business information:
+The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop"`). Subsequent starts **preserve** saved settings. One compatibility correction upgrades previously saved repair/diagnostic rules with `requiresApproval: false` to `true` under the same MongoDB revision guard. This fixes earlier PR #9 defaults, increments the settings revision, and preserves hours, capacity, estimates, and automatic-booking/verification flags. Defaults are editable placeholders, not confirmed business information:
 
 | Setting | Default |
 | --- | --- |
@@ -19,7 +19,7 @@ The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop
 | Automatic booking | **Disabled** |
 | Hours/capacity verified | **Both false** |
 
-Cabin filter, engine filter, and wiper booking estimates are 30 minutes; tire rotation and oil change are 60; engine diagnostics is 90. Brake, AC/heating, and Other / Not Sure have editable 120-minute placeholders and **always require mechanic approval**. These estimates reserve time, not guaranteed repair completion times. The existing shared service catalog remains the source of accepted names and provisional service flags.
+Cabin filter, engine filter, and wiper booking estimates are 30 minutes; tire rotation and oil change are 60; engine diagnostics is 90. Brake, AC/heating, and Other / Not Sure have editable 120-minute placeholders. **All Repairs & Diagnostics services, including Engine Diagnostics, always require mechanic approval**; settings updates cannot disable that category policy. These estimates reserve time, not guaranteed repair completion times. The existing shared service catalog remains the source of accepted names and provisional service flags.
 
 Both the service duration **and buffer** must fit inside one work interval and avoid lunch, closures, and blocked periods. For example, an hour-long visit at 11:00 is unavailable because its buffer would cross into lunch. No US holiday assumptions are invented: Edward must enter `closedDates` or blocked periods.
 
@@ -44,7 +44,7 @@ Backup/restore **both collections together**. Direct appointment/ledger edits by
 
 - Pending requests occupy their full estimated duration plus buffer until reviewed, declined, or their hold expires. The default hold is 24 hours and can be configured from 1–168 hours.
 - Expiration is checked on reads/admissions; it does not depend on a timer or TTL cleanup running on time. Expired ledger holds are pruned on subsequent mutations. **Appointment records stay pending and are never deleted or silently confirmed.**
-- Confirming an expired request requires acquiring capacity again; a conflict returns HTTP 409 and leaves the request pending. Approval may occur inside the original 24-hour notice window or beyond a subsequently shortened horizon, but must still be future, obey the current calendar, and fit capacity.
+- Confirming an expired request requires acquiring capacity again; a conflict returns HTTP 409 and leaves the request pending. Approval may occur inside the original 24-hour notice window or beyond a subsequently shortened horizon. Historical requests at off-grid times such as 08:15 may be approved: the configured start grid applies to new customer bookings, not manual approval of existing requests. Approval must still be future, obey current working hours, breaks, closures, blocked periods, duration/buffer and timezone constraints, and fit capacity. New customer submissions and public slots continue to enforce the configured grid.
 - Confirmed appointments remain occupied until their interval/buffer ends; pending-hold expiry never releases a confirmed appointment.
 - Existing records without scheduling metadata use the shared catalog's duration (including the old `Air Filter Change` alias) or the conservative unknown-service estimate, plus buffer. Old strings are preserved in storage and email; no migration rewrites them.
 - Legacy pending age is `createdAt + pendingHoldHours`. A request lacking usable age metadata remains occupied until reviewed. Missing legacy status is treated as pending on reads/review without bulk rewriting records.
@@ -63,10 +63,18 @@ Normal submissions **remain pending** under the seeded defaults. Automation requ
 
 - `automaticBookingEnabled: true`;
 - `businessHoursVerified: true` and `capacityVerified: true`, after actual business confirmation;
-- a non-provisional service whose scheduling rule permits automatic approval;
+- a non-provisional **Basic Maintenance** service whose scheduling rule permits automatic approval;
 - a newly revalidated, atomically reserved slot and an available daily automatic-admission place.
 
-Enabling the flag alone cannot confirm using placeholder hours/capacity. Editing saved hours/timezone/breaks or capacity invalidates the corresponding verification unless the same authenticated edit explicitly re-verifies it. Provisional tire/cabin-filter/wiper services cannot be automatically confirmed even when settings are verified. Brake/AC/Other repairs always require approval. When the automatic limit is reached, an otherwise valid request remains pending with a provisional hold. Email receipts reflect actual automatic confirmation when it happens; pending receipts never imply approval. No live settings were enabled during development.
+Enabling the flag alone cannot confirm using placeholder hours/capacity. Editing saved hours/timezone/breaks or capacity invalidates the corresponding verification unless the same authenticated edit explicitly re-verifies it. Provisional tire/cabin-filter/wiper services cannot be automatically confirmed even when settings are verified. Every Repairs & Diagnostics service (Brake Repairs, AC & Heating Repair, Engine Diagnostics, and Other / Not Sure) always requires approval. This list is derived from the shared catalog category, so new repair-category entries cannot accidentally become automatic. When the automatic limit is reached, an otherwise valid request remains pending with a provisional hold. Email receipts reflect actual automatic confirmation when it happens; pending receipts never imply approval. No live settings were enabled during development.
+
+## Customer notification policy
+
+`decisionCustomer` is the **only customer-confirmation queue for automatic bookings**. Automatic approval atomically changes a still-pending `requestCustomer` receipt to `suppressed` while setting confirmed status and queuing `decisionCustomer`. If the initial pending receipt was already sent, its `sent` state is preserved and only the decision confirmation is queued. A receipt already in flight may finish with its pending message; it is followed by one logical confirmation rather than two different confirmation messages.
+
+The dispatcher also suppresses unsent request receipts on automatically confirmed records queued by older PR revisions. It does not suppress the mechanic notice. The request-receipt template refuses automatic-confirmation use, preventing an alternate confirmation path. Manual approval is unchanged: the pending receipt and mechanic notice are sent normally, then Edward's confirmed/declined decision is queued after review.
+
+This removes duplicate **logical confirmation paths**. Existing SMTP retry semantics remain at-least-once: provider acceptance followed by a failed state acknowledgement can still cause a retry. Tests use injected transports only; no external customer email is sent during validation.
 
 ## API contract
 

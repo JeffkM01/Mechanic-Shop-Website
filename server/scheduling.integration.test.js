@@ -8,6 +8,8 @@ import { createSchedulingService } from "./schedulingService.js";
 import { defaultSettings } from "./schedulingRules.js";
 import { createApp } from "./app.js";
 import { createMechanicAuth } from "./mechanicAuth.js";
+import { createEmailNotifications } from "./emailNotifications.js";
+import { SERVICES } from "../shared/services.js";
 
 // These are integration tests against a real, standalone MongoDB instance. Each
 // test owns a random database; the application's configured database is not used.
@@ -112,6 +114,24 @@ async function httpFixture(t) {
     cookieHeaders: { Cookie: cookie },
     authorizedHeaders: { Cookie: cookie, "X-Mechanic-CSRF": login.body.csrfToken },
   };
+}
+
+async function notificationQueue(Appointment) {
+  const sent = [];
+  const errors = [];
+  const mechanicEmail = "mechanic-notifications@example.invalid";
+  const notifications = await createEmailNotifications({
+    Appointment,
+    env: {
+      SMTP_HOST: "smtp.example.invalid", SMTP_PORT: "587",
+      SMTP_USER: "test-user", SMTP_PASS: "test-password",
+      MAIL_FROM: "appointments@example.invalid", MECHANIC_NOTIFICATION_EMAIL: mechanicEmail,
+    },
+    transport: { async sendMail(message) { sent.push(message); } },
+    logger: { error(message) { errors.push(message); } },
+  });
+  assert.equal(notifications.enabled, true);
+  return { notifications, sent, errors, mechanicEmail };
 }
 
 test("scheduling defaults persist in MongoDB with automatic booking disabled", async (t) => {
@@ -291,6 +311,55 @@ test("legacy requests with missing status and age metadata stay held and can be 
   assert.ok(times(await scheduling.getAvailability("Oil Change", appointmentDate)).includes("09:30"));
 });
 
+test("the mechanic HTTP endpoint approves legacy off-grid requests while new bookings still require configured increments", async (t) => {
+  const { api, Appointment, authorizedHeaders } = await httpFixture(t);
+  const rejected = await api("/api/appointments", { method: "POST", body: request({ time: "08:15" }) });
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.body.code, "INVALID_TIME_INCREMENT");
+  assert.equal(await Appointment.countDocuments(), 0);
+  const { insertedId } = await Appointment.collection.insertOne({ ...request({ time: "08:15" }), status: "pending" });
+  const approved = await api(`/api/mechanic/appointments/${insertedId}`, {
+    method: "PATCH", headers: authorizedHeaders, body: { status: "confirmed" },
+  });
+  assert.equal(approved.status, 200);
+  const stored = await Appointment.findById(insertedId);
+  assert.equal(stored.status, "confirmed");
+  assert.equal(stored.time, "08:15");
+  assert.equal(stored.scheduling.startAt.toISOString(), "2026-11-11T14:15:00.000Z");
+  assert.equal(stored.scheduling.endAt.toISOString(), "2026-11-11T15:15:00.000Z");
+  assert.equal(stored.scheduling.occupiedUntil.toISOString(), "2026-11-11T15:30:00.000Z");
+  assert.equal(stored.scheduling.confirmationSource, "manual");
+});
+
+test("legacy off-grid approval still enforces capacity, working hours, lunch, and manual blocks", async (t) => {
+  const cases = [
+    { label: "occupied capacity", time: "08:15", code: "SLOT_UNAVAILABLE", occupied: true },
+    { label: "service overlaps lunch", time: "11:15", code: "SHOP_BREAK" },
+    { label: "service exceeds closing time", time: "16:15", code: "OUTSIDE_HOURS" },
+    { label: "manually blocked period", time: "09:15", code: "BLOCKED_PERIOD", blocked: true },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.label, async (t) => {
+      const { api, Appointment, scheduling, authorizedHeaders } = await httpFixture(t);
+      if (scenario.occupied) await scheduling.createAppointment(request());
+      if (scenario.blocked) await scheduling.addBlockedPeriod({
+        startAt: "2026-11-11T15:00:00.000Z", endAt: "2026-11-11T17:00:00.000Z",
+      });
+      const { insertedId } = await Appointment.collection.insertOne({
+        ...request({ time: scenario.time }), status: "pending",
+      });
+      const rejected = await api(`/api/mechanic/appointments/${insertedId}`, {
+        method: "PATCH", headers: authorizedHeaders, body: { status: "confirmed" },
+      });
+      assert.equal(rejected.status, 409);
+      assert.equal(rejected.body.code, scenario.code);
+      const stored = await Appointment.collection.findOne({ _id: insertedId });
+      assert.equal(stored.status, "pending");
+      assert.equal(stored.scheduling, undefined, "a rejected approval must not rewrite the historical request");
+    });
+  }
+});
+
 test("unusable legacy times block their future date conservatively without disabling unrelated dates", async (t) => {
   const { scheduling, Appointment } = await fixture(t);
   await Appointment.collection.insertOne({
@@ -413,6 +482,152 @@ test("automatic confirmation requires explicit verified settings and excludes pr
   await scheduling.updateSettings({ businessHoursVerified: true, capacityVerified: true });
   assert.equal((await scheduling.createAppointment(request({ service: "Tire Rotation", time: "13:00" }))).status, "pending");
   assert.equal((await scheduling.createAppointment(request({ service: "Brake Repairs", date: "2026-11-12" }))).status, "pending");
+});
+
+test("every Repairs & Diagnostics service requires approval even with verified automatic booking enabled", async (t) => {
+  const { scheduling } = await fixture(t);
+  await scheduling.updateSettings({ automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true });
+  for (const { name } of SERVICES.filter(({ category }) => category === "repairs")) {
+    const appointment = await scheduling.createAppointment(request({ service: name }));
+    assert.equal(appointment.status, "pending", `${name} must never be automatically confirmed`);
+    await assert.rejects(scheduling.reviewAppointment(appointment.id, "confirmed", { automatic: true }),
+      (error) => conflict(error) && error.code === "MANUAL_APPROVAL_REQUIRED");
+    await scheduling.reviewAppointment(appointment.id, "declined");
+  }
+  assert.equal((await scheduling.createAppointment(request({ time: "13:00" }))).status, "confirmed",
+    "verified basic maintenance remains eligible for explicitly enabled automatic booking");
+});
+
+test("the authenticated settings API cannot disable approval for any repair or diagnostics service", async (t) => {
+  const { api, authorizedHeaders, scheduling } = await httpFixture(t);
+  const before = await scheduling.getSettings();
+  for (const { name } of SERVICES.filter(({ category }) => category === "repairs")) {
+    const rejected = await api("/api/mechanic/scheduling/settings", {
+      method: "PATCH", headers: authorizedHeaders,
+      body: { revision: before.revision, settings: { serviceRules: {
+        [name]: { ...before.settings.serviceRules[name], requiresApproval: false },
+      } } },
+    });
+    assert.equal(rejected.status, 400, name);
+    assert.match(rejected.body.error, /approval/i);
+  }
+  assert.deepEqual(await scheduling.getSettings(), before, "rejected policy changes must not persist");
+});
+
+test("legacy persisted repair settings are corrected atomically without losing verified settings or blocking later edits", async (t) => {
+  const { api, authorizedHeaders, scheduling, otherScheduling, SchedulingState } = await httpFixture(t);
+  await scheduling.getSettings();
+  const before = await SchedulingState.findById("shop").lean();
+  const legacySettings = structuredClone(before.settings);
+  Object.assign(legacySettings, {
+    automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true,
+    capacity: 2, maxAutomaticPerDay: 4, bufferMinutes: 20, closedDates: ["2026-11-12"],
+  });
+  legacySettings.serviceRules["Engine Diagnostics"].durationMinutes = 105;
+  const expectedSettings = structuredClone(legacySettings);
+  for (const { name } of SERVICES.filter(({ category }) => category === "repairs")) {
+    legacySettings.serviceRules[name].requiresApproval = false;
+    expectedSettings.serviceRules[name].requiresApproval = true;
+  }
+  // Bypass current validation to represent data written by the earlier PR revision.
+  await SchedulingState.collection.updateOne({ _id: "shop" }, { $set: { settings: legacySettings } });
+  const [first, second] = await Promise.all([scheduling.getSettings(), otherScheduling.getSettings()]);
+  assert.deepEqual(first.settings, expectedSettings);
+  assert.deepEqual(second, first);
+  assert.equal(first.revision, before.settingsRevision + 1);
+  const repaired = await SchedulingState.findById("shop").lean();
+  assert.equal(repaired.revision, before.revision + 1, "concurrent readers must apply one policy migration");
+  assert.equal(repaired.settingsRevision, before.settingsRevision + 1);
+  const changed = await api("/api/mechanic/scheduling/settings", {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: first.revision, settings: { maxAutomaticPerDay: 5 } },
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.settings.maxAutomaticPerDay, 5);
+  assert.equal(changed.body.settings.serviceRules["Engine Diagnostics"].requiresApproval, true);
+  assert.equal(changed.body.settings.automaticBookingEnabled, true);
+});
+
+test("automatic bookings queue one customer confirmation and one mechanic notice across repeated dispatcher sweeps", async (t) => {
+  for (const legacyQueue of [false, true]) {
+    await t.test(legacyQueue ? "previously persisted duplicate queue" : "new automatic booking", async (t) => {
+      const { scheduling, Appointment } = await fixture(t);
+      const { notifications, sent, errors, mechanicEmail } = await notificationQueue(Appointment);
+      await scheduling.updateSettings({ automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true });
+      const appointment = await scheduling.createAppointment(request());
+      assert.equal(appointment.status, "confirmed");
+      assert.equal(appointment.notificationState.requestCustomer, "suppressed");
+      assert.equal(appointment.notificationState.decisionCustomer, "pending");
+      if (legacyQueue) {
+        await Appointment.collection.updateOne({ _id: appointment._id }, {
+          $set: { "notificationState.requestCustomer": "pending" },
+        });
+      }
+      await notifications.processPending();
+      await notifications.processPending();
+      assert.deepEqual(errors, []);
+      const customerMessages = sent.filter(({ to }) => to === request().email);
+      assert.equal(customerMessages.length, 1);
+      assert.match(customerMessages[0].subject, /appointment confirmed$/);
+      assert.match(customerMessages[0].text, /CONFIRMED/);
+      assert.equal(sent.filter(({ to }) => to === mechanicEmail).length, 1);
+      const stored = await Appointment.findById(appointment.id);
+      assert.equal(stored.notificationState.requestCustomer, "suppressed");
+      assert.equal(stored.notificationState.requestMechanic, "sent");
+      assert.equal(stored.notificationState.decisionCustomer, "sent");
+    });
+  }
+});
+
+test("automatic approval preserves a request receipt sent before approval and sends only one final confirmation", async (t) => {
+  const { scheduling, Appointment } = await fixture(t);
+  const { notifications, sent, errors, mechanicEmail } = await notificationQueue(Appointment);
+  await scheduling.updateSettings({ automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true });
+  const originalSave = Appointment.prototype.save;
+  Appointment.prototype.save = async function dispatchBeforeAutomaticApproval(...args) {
+    const saved = await originalSave.apply(this, args);
+    await notifications.processPending();
+    return saved;
+  };
+  let appointment;
+  try {
+    appointment = await scheduling.createAppointment(request());
+  } finally {
+    Appointment.prototype.save = originalSave;
+  }
+  assert.equal(appointment.status, "confirmed");
+  assert.equal(appointment.notificationState.requestCustomer, "sent", "preserve the actual receipt delivery audit");
+  assert.equal(appointment.notificationState.decisionCustomer, "pending");
+  await notifications.processPending();
+  await notifications.processPending();
+  assert.deepEqual(errors, []);
+  const customerMessages = sent.filter(({ to }) => to === request().email);
+  assert.equal(customerMessages.length, 2);
+  assert.equal(customerMessages.filter(({ subject }) => /request received$/.test(subject)).length, 1);
+  assert.equal(customerMessages.filter(({ subject }) => /appointment confirmed$/.test(subject)).length, 1);
+  assert.equal(sent.filter(({ to }) => to === mechanicEmail).length, 1);
+  const stored = await Appointment.findById(appointment.id);
+  assert.equal(stored.notificationState.requestCustomer, "sent");
+  assert.equal(stored.notificationState.decisionCustomer, "sent");
+});
+
+test("manual approval retains the pending receipt followed by one customer decision notification", async (t) => {
+  const { scheduling, Appointment } = await fixture(t);
+  const { notifications, sent, errors, mechanicEmail } = await notificationQueue(Appointment);
+  const appointment = await scheduling.createAppointment(request());
+  assert.equal(appointment.status, "pending");
+  await notifications.processPending();
+  assert.equal(sent.length, 2);
+  assert.match(sent.find(({ to }) => to === request().email).text, /PENDING/);
+  const confirmed = await scheduling.reviewAppointment(appointment.id, "confirmed");
+  assert.equal(confirmed.notificationState.requestCustomer, "sent");
+  assert.equal(confirmed.notificationState.decisionCustomer, "pending");
+  await notifications.processPending();
+  await notifications.processPending();
+  assert.deepEqual(errors, []);
+  assert.equal(sent.filter(({ to }) => to === request().email).length, 2);
+  assert.equal(sent.filter(({ to, subject }) => to === request().email && /appointment confirmed$/.test(subject)).length, 1);
+  assert.equal(sent.filter(({ to }) => to === mechanicEmail).length, 1);
 });
 
 test("concurrent automatic confirmations enforce the daily limit and leave additional requests pending", async (t) => {

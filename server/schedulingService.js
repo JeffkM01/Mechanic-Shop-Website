@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { randomUUID } from "node:crypto";
-import { getService } from "../shared/services.js";
+import { SERVICES, getService } from "../shared/services.js";
 import { defaultSettings, mergeSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
 
 const idOf = (value) => String(value);
@@ -9,15 +9,30 @@ const conflict = () => new SchedulingError(409, "That start time is no longer av
 
 export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date() }) {
   async function readState() {
-    let state = await SchedulingState.findById("shop").lean();
-    if (state) return state;
-    try {
-      await SchedulingState.create([{ _id: "shop", revision: 0, settingsRevision: 0, settings: defaultSettings(), reservations: [], automaticCounts: [] }], { writeConcern: { w: "majority", j: true } });
-    } catch (error) {
-      if (error.code !== 11000) throw error;
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const state = await SchedulingState.findById("shop").lean();
+      if (!state) {
+        try {
+          await SchedulingState.create([{ _id: "shop", revision: 0, settingsRevision: 0, settings: defaultSettings(), reservations: [], automaticCounts: [] }], { writeConcern: { w: "majority", j: true } });
+        } catch (error) {
+          if (error.code !== 11000) throw error;
+        }
+        continue;
+      }
+      // Previous PR revisions seeded Engine Diagnostics as auto-eligible.
+      // Repair stored policy under the same CAS as bookings/settings so old
+      // defaults neither enable diagnostics automation nor prevent future edits.
+      const corrections = Object.fromEntries(SERVICES
+        .filter(service => service.category === "repairs" && state.settings?.serviceRules?.[service.name]
+          && state.settings.serviceRules[service.name].requiresApproval !== true)
+        .map(service => [`settings.serviceRules.${service.name}.requiresApproval`, true]));
+      if (!Object.keys(corrections).length) return state;
+      await SchedulingState.updateOne({ _id: "shop", revision: state.revision }, {
+        $set: corrections,
+        $inc: { revision: 1, settingsRevision: 1 },
+      }, { runValidators: true, writeConcern: { w: "majority", j: true } });
     }
-    state = await SchedulingState.findById("shop").lean();
-    return state;
+    throw new SchedulingError(503, "The schedule is busy. Please retry your request.", "SCHEDULE_BUSY");
   }
 
   function conservativeLegacyDay(record, settings, originalError) {
@@ -100,6 +115,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
 
   const automaticEligible = (settings, service) => settings.automaticBookingEnabled
     && settings.businessHoursVerified && settings.capacityVerified
+    && service.category === "maintenance"
     && !service.provisional && !settings.serviceRules[service.name].requiresApproval;
 
   function reservationFor(id, candidate, state, clock, confirmed = false, source) {
@@ -261,11 +277,25 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     // A non-expiring confirmed reservation is committed BEFORE approval. If a
     // crash interrupts the second write, keep it conservatively occupied until
     // Edward retries confirmation or declines; never report a false confirmation.
-    const updated = await Appointment.findOneAndUpdate({ _id: id, $or: [{ status: "pending" }, { status: null }] }, { $set: {
+    const pending = { _id: id, $or: [{ status: "pending" }, { status: null }] };
+    const change = {
       status: "confirmed",
       scheduling: { ...snapshot(confirmed.reservation), holdExpiresAt: appointment.scheduling?.holdExpiresAt, confirmedAt: confirmed.clock },
       "notificationState.decisionCustomer": "pending",
-    } }, { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } });
+    };
+    const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } };
+    let updated;
+    if (automatic) {
+      // Status and suppression commit together. A pending receipt must not
+      // become a second automatic confirmation. If it was already sent while
+      // approval was in flight, preserve that fact and queue the decision only.
+      updated = await Appointment.findOneAndUpdate({ ...pending, "notificationState.requestCustomer": "pending" }, {
+        $set: { ...change, "notificationState.requestCustomer": "suppressed" },
+      }, options);
+      if (!updated) updated = await Appointment.findOneAndUpdate({ ...pending, "notificationState.requestCustomer": { $ne: "pending" } }, { $set: change }, options);
+    } else {
+      updated = await Appointment.findOneAndUpdate(pending, { $set: change }, options);
+    }
     if (!updated) throw new SchedulingError(409, "This request was already reviewed or no longer exists.");
     return updated;
   }

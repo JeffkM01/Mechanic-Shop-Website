@@ -4,7 +4,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const formatters = new Map();
 const canonicalNames = SERVICES.map(({ name }) => name);
-const approvalOnlyServices = ["Brake Repairs", "AC & Heating Repair", "Other / Not Sure"];
+const approvalOnlyServices = SERVICES.filter(({ category }) => category === "repairs").map(({ name }) => name);
 const settingsKeys = [
   "timezone", "weeklyHours", "breaks", "closedDates", "blockedPeriods",
   "capacity", "maxAutomaticPerDay", "minimumNoticeHours", "bookingHorizonDays",
@@ -295,7 +295,9 @@ export function buildCandidate(settings, serviceName, date, time, nowDate, { app
   const calendarDay = parseDate(date);
   const minutes = parseTime(time);
   const now = instant(nowDate, "Current time");
-  if (minutes % settings.startIncrementMinutes !== 0) invalid("Select a time on the configured booking increment.", "INVALID_TIME_INCREMENT");
+  // Historical requests may predate the booking grid. Approval preserves their
+  // requested minute while retaining the current calendar checks below.
+  if (!approval && minutes % settings.startIncrementMinutes !== 0) invalid("Select a time on the configured booking increment.", "INVALID_TIME_INCREMENT");
   const startAt = localDateTimeToUtc(date, time, settings.timezone);
   if (startAt <= now) unavailable("Appointments must start in the future.", "PAST_APPOINTMENT");
   // Approval can happen after the original notice window or after the horizon
