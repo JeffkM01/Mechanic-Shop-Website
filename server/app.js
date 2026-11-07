@@ -19,6 +19,15 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
     catch (error) { next(error); }
   });
 
+  app.get("/api/availability/calendar", async (req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    if (typeof req.query.service !== "string" || (req.query.month !== undefined && typeof req.query.month !== "string")) {
+      return res.status(400).json({ error: "Provide one service and an optional month (YYYY-MM)." });
+    }
+    try { res.json(await scheduling.getCalendarAvailability(req.query.service, req.query.month)); }
+    catch (error) { next(error); }
+  });
+
   app.post("/api/appointments", async (req, res, next) => {
     // Date/time syntax is checked here; the shop's persisted timezone, hours,
     // notice and capacity rules are applied atomically by scheduling below.
