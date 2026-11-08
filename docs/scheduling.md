@@ -7,8 +7,8 @@ The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop
 | Setting | Default |
 | --- | --- |
 | Timezone | America/Chicago |
-| Hours | Monday–Friday, 08:00–17:00; Saturday/Sunday closed |
-| Daily break | 12:00–13:00 |
+| Hours | Monday–Friday, 8:00 AM–5:00 PM; Saturday/Sunday closed |
+| Daily break | 12:00 PM–1:00 PM |
 | Simultaneous capacity | 1 |
 | Daily automatic confirmations | At most 3 |
 | Minimum customer notice | 24 elapsed hours |
@@ -21,7 +21,7 @@ The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop
 
 Cabin filter, engine filter, and wiper booking estimates are 30 minutes; tire rotation and oil change are 60; engine diagnostics is 90. Brake, AC/heating, and Other / Not Sure have editable 120-minute placeholders. **All Repairs & Diagnostics services, including Engine Diagnostics, always require mechanic approval**; settings updates cannot disable that category policy. These estimates reserve time, not guaranteed repair completion times. The existing shared service catalog remains the source of accepted names and provisional service flags.
 
-Both the service duration **and buffer** must fit inside one work interval and avoid lunch, closures, and blocked periods. For example, an hour-long visit at 11:00 is unavailable because its buffer would cross into lunch. No US holiday assumptions are invented: Edward must enter `closedDates` or blocked periods.
+Both the service duration **and buffer** must fit inside one work interval and avoid lunch, closures, and blocked periods. For example, an hour-long visit at 11:00 AM is unavailable because its buffer would cross into lunch. No US holiday assumptions are invented: Edward must enter `closedDates` or blocked periods.
 
 ## Atomic protection on standalone MongoDB
 
@@ -86,8 +86,8 @@ This removes duplicate **logical confirmation paths**. Existing SMTP retry seman
 | `PATCH /api/mechanic/appointments/:id` | Existing mechanic session + CSRF; `{status:"confirmed"}` rechecks and acquires capacity; `{status:"declined"}` releases |
 | `GET /api/mechanic/scheduling/settings` | Mechanic session; `{revision, settings}` |
 | `PATCH /api/mechanic/scheduling/settings` | Mechanic session + CSRF; `{revision, settings: partialPatch}`; stale settings revision -> 409 |
-| `POST /api/mechanic/scheduling/blocks` | Mechanic session + CSRF; `{startAt, endAt, reason?}` -> 201 with generated block ID |
-| `DELETE /api/mechanic/scheduling/blocks/:id` | Mechanic session + CSRF; removes a block |
+| `POST /api/mechanic/scheduling/blocks` | Mechanic session + CSRF; `{startAt, endAt, reason?, revision?}` -> 201 with generated block ID; stale optional revision -> 409 |
+| `DELETE /api/mechanic/scheduling/blocks/:id` | Mechanic session + CSRF; optional JSON `{revision}`; removes a block only if the supplied revision is current |
 
 Availability returns `{date,service,timezone,durationMinutes,slots,policy,settingsProvisional,message}`. Slots contain only `{time,startAt,endAt,durationMinutes}`. Closed/out-of-window/occupied dates return an empty slots array; malformed dates/services return 400. Booking/approval conflicts return 409 with a safe message and error code. Busy/database failures fail closed. The public availability response exposes no names, phones, emails, notes, appointment identifiers, or private blocked-period reasons. The existing POST response still returns the submitting customer’s own reference ID.
 
@@ -115,7 +115,7 @@ The shared `policy` fields are `minimumNoticeHours`, `bookingHorizonDays`, `pend
 
 Both availability endpoints send `Cache-Control: no-store`. A displayed result is a point-in-time observation, not a reservation or promise. The existing POST endpoint revalidates and atomically reserves against the latest settings and occupancy even if availability was fetched immediately before submission.
 
-The future dashboard can edit `weeklyHours` (0=Sunday … 6=Saturday, arrays of `{start,end}`), daily `breaks`, `closedDates`, `blockedPeriods`, capacity, notices, horizon, grid, buffers, hold length, service rules, and verification flags without a schema redesign. Unknown keys, invalid types, unsafe ranges, and invalid intervals are rejected. Working intervals cannot cross local midnight; use separate per-day intervals. Settings APIs are ready, but no new staff settings screen or rescheduling/cancellation UI is included.
+The protected staff dashboard edits `weeklyHours` (0=Sunday … 6=Saturday, arrays of `{start,end}`), recurring shop-wide `breaks`, `closedDates`, capacity, notices, horizon, grid, buffers, hold length, service rules, timezone, and verification flags through the existing settings API. Blocked periods use their dedicated endpoints. Unknown keys, invalid types, unsafe ranges, and invalid intervals are rejected. Working intervals cannot cross local midnight; use separate per-day intervals. A closing boundary of `24:00` means midnight at the start of the following date and is labeled accordingly. No new appointment rescheduling/cancellation or confirmed-appointment deletion behavior is introduced.
 
 ## Customer calendar and booking flow
 
@@ -137,6 +137,63 @@ Successful responses are displayed according to the saved server status. Pending
 
 The calendar does not edit business settings or enable automatic booking. **Automatic booking remains disabled by default**, hours/capacity remain unverified placeholders, and provisional services remain subject to Edward's confirmation. Edward must verify real hours, capacity, service availability, and booking-duration estimates before enabling eligible Basic Maintenance automation through the existing protected settings workflow. Repairs & Diagnostics always require mechanic approval.
 
+## Mechanic scheduling dashboard
+
+Sign in at `/mechanic` using the existing Staff Login link. The authenticated workspace separates appointment management from **Business Hours**, **Closures & Blocked Times**, and **Booking Settings**. Unauthenticated visitors see only the sign-in screen. Settings are fetched lazily when an authenticated staff member first opens a scheduling section, and reused across section navigation within that session. Opening the dashboard never replaces stored settings with placeholders.
+
+**Appointments** preserves pending/confirmed/declined/all filters, customer contact/vehicle/notes, and the existing Confirm/Decline actions. A conflicting approval displays the server error and leaves the request pending. Notification queue/retry behavior is unchanged. Existing request date/time strings, duration snapshots, and status semantics remain in storage.
+
+**Business Hours** provides an Open/Closed control for every weekday and supports up to 24 non-overlapping work intervals per day. Add or remove intervals and edit opening/closing times in AM/PM. A closed weekday has no working intervals and offers no customer appointments. Closing must follow opening within one shop day; invalid or overlapping intervals cannot be saved. The recurring-break editor supports up to 24 non-overlapping daily breaks. These breaks apply **shop-wide on every open day**, not to selected weekdays or individual staff. The interface makes this limitation explicit rather than changing the scheduling schema.
+
+**Save Changes** validates the draft and opens a review showing each changed field with its saved and proposed values. Nothing is written at this step. **Confirm Changes** applies the reviewed partial patch through the existing `{revision, settings: partialPatch}` contract; **Keep Editing** returns to the draft without saving. **Discard Changes** restores the saved snapshot. Unsaved changes are visibly distinguished from saved values, and the review explains the customer-availability impact before any PATCH is sent. Backend validation is authoritative: a proposed closure, break, working-hours change, timezone change, or capacity reduction that conflicts with held/confirmed work returns a clear error and preserves saved settings and appointments.
+
+**Closed Dates** accepts a strictly validated `MM/DD/YYYY` date, lists dates chronologically, prevents duplicates, and requires an explicit removal confirmation. Adding or removing a closure changes the draft; Save Changes followed by Confirm Changes is still required. Federal holidays are never inserted automatically. Removing a closure may make its date available under the other saved rules.
+
+**Blocked Time** accepts start/end dates and AM/PM times plus an optional staff-only reason of up to 200 characters. Start and end may fall on different dates. The browser resolves each wall-clock choice using the **persisted shop timezone**, converts it to UTC ISO for `POST /api/mechanic/scheduling/blocks`, and rejects missing or ambiguous clock-change times. The resolver is shared with the existing backend so browser and server do not guess different DST offsets. Existing blocks are sorted chronologically and displayed in the shop timezone. Removing a block requires explicit confirmation and uses `DELETE /api/mechanic/scheduling/blocks/:id`.
+
+Block changes save immediately through those dedicated endpoints and then load their new settings revision. The staff UI sends the revision of the saved configuration used to resolve the wall-clock inputs: `revision` in the POST body and `{revision}` in the DELETE body. These optional values must be non-negative integers. The existing MongoDB compare-and-swap checks the precondition **inside each atomic mutation attempt**, including every retry. If another process changed the timezone or any settings after the form loaded, `SETTINGS_CHANGED` rejects the stale block operation before writing. This prevents a Chicago-derived UTC instant from silently becoming a different local appointment block after a concurrent timezone change.
+
+The revision precondition is an additive extension to the existing block endpoints and reservation coordinator; no new scheduling infrastructure, database schema, or booking rules are introduced. Older callers that supply UTC instants directly may continue omitting the optional revision and retain their original POST/DELETE contract. The revision is a request precondition, not stored blocked-period data.
+
+A stale-revision block error locks further block/settings mutations until **Reload Latest Settings** succeeds. Local start/end date, time, and reason inputs remain available for correction and review; after reload, the same wall-clock choices are resolved again using the newly saved timezone before any explicit resubmission. A successful removal likewise refreshes the saved revision. If a block may have committed but its response or follow-up settings read fails, further mutations are locked until **Reload Latest Settings** succeeds; the UI does not guess whether it should replay the block operation. Edward must review the refreshed list before making another block change. Save or discard any ordinary settings edits before managing blocks; the UI disables block actions while such edits remain, avoiding a block refresh overwriting an unsaved draft or using an unsaved timezone. A conflicting block displays the server's error without releasing appointments. Block reasons remain visible only in the protected staff settings response; neither public availability endpoint exposes them.
+
+**Booking Settings** exposes these existing integer constraints:
+
+| Control | Allowed values |
+| --- | --- |
+| Simultaneous capacity | 1–20 |
+| Maximum automatic confirmations per day | 0–100 |
+| Minimum advance notice | 0–720 hours |
+| Booking horizon | 1–365 calendar days |
+| Appointment start increment | 5–120 minutes; must divide 1,440 evenly |
+| Appointment buffer | 0–120 minutes |
+| Pending request hold duration | 1–168 hours |
+| Service booking estimate | 5–720 minutes |
+
+Service names/categories/provisional flags come from the shared catalog. Estimate changes affect new availability, not historical held/confirmed duration and buffer snapshots. The legacy unknown-service estimate remains an existing backend compatibility setting; this dashboard does not rewrite old service names or expose a separate unknown-service catalog entry.
+
+### Explicit verification and automatic-booking safety
+
+The dashboard shows the saved/draft automation and verification state, with separate acknowledgments for real operating hours/timezone/breaks and actual simultaneous capacity. It does not auto-check these acknowledgments. Editing hours/timezone/breaks clears hours verification; editing capacity clears capacity verification. Edward must explicitly verify the changed information again.
+
+Enabling automatic booking is unavailable until both acknowledgments are present and requires a separate confirmation explaining its consequences. That confirmation changes the draft only; Save Changes and then Confirm Changes are still required to apply the reviewed configuration. Opening the page, editing an unrelated setting, or saving does not itself enable automation. Disabling automation is available without removing other business settings.
+
+Only non-provisional Basic Maintenance services can be made eligible; Edward may additionally require their manual approval. The UI provides no override for Repairs & Diagnostics or provisional services. All Repairs & Diagnostics, including Engine Diagnostics, always require mechanic approval at the backend. Provisional services remain ineligible for automatic confirmation even if their stored `requiresApproval` flag is false. The customer page displays only the status actually saved by the server.
+
+### Revision conflicts and private-state lifetime
+
+Settings PATCH requests include the loaded `settingsRevision`. If another administrator or a dedicated block mutation changed the configuration, HTTP 409 with `SETTINGS_CHANGED` prevents overwrite. The dashboard keeps the unsaved draft and offers **Reload Latest Settings**. Loading the latest snapshot does not automatically save or replay the draft. It identifies overlapping changes and requires **Review with Latest Settings** before the preserved edits are applied to the newer saved snapshot. Unrelated newer values are retained; overlapping fields use the displayed local edits only after this explicit action. Save Changes and Confirm Changes are still required afterward, so reload and rebase never write automatically. Discard is available to adopt the latest saved values instead. Hours/capacity verification must be renewed when a changed configuration makes a prior acknowledgment unsafe.
+
+The existing `useMechanicSession` remains the only staff session mechanism. Settings and appointments use the HTTP-only cookie; modifying requests include its in-memory CSRF token. No credentials or CSRF tokens are written to browser storage. Unauthorized reads/writes, invalid CSRF tokens, server errors, and reservation conflicts remain server-enforced. Session expiry, sign-out, and browser session revalidation discard the private workspace and in-flight UI work. Background reads do not renew inactivity time.
+
+## U.S. date/time display and unchanged storage
+
+Visible customer and mechanic scheduling dates use **MM/DD/YYYY**, and times use **12-hour AM/PM** notation explicitly formatted with the U.S. locale. This includes calendar date labels/selection, request review and success, hold expiration, appointment cards, closures, and blocked periods. Calendar month headings remain readable month/year labels and grid cells remain day numbers. Date/time fields use explicitly formatted text with strict validated conversion, avoiding native date/time controls whose presentation depends on the visitor's locale.
+
+`src/utils/bookingDates.js` is the shared frontend formatting/parsing entry point. Strict display-date parsing rejects impossible dates such as `02/29/2027` or `04/31/2027`; valid leap dates round-trip to the same ISO calendar date. Date-only values use Gregorian calendar arithmetic and are never interpreted as an ordinary local timestamp. Actual timestamps are formatted in the configured shop timezone; new appointment snapshots preserve their original timezone.
+
+Display conversion never changes the wire/storage contract: date-only API/MongoDB values remain `YYYY-MM-DD`, API clock times remain `HH:MM`, and actual UTC timestamps remain ISO 8601. No schema stores presentation strings. The extracted `shared/shopTime.js` wall-clock resolver preserves the server's strict timezone, missing-time, and repeated-time behavior and is reused for staff-entered block conversion. Both DST spring gaps and fall folds require correction rather than an assumed offset.
+
 ## Development and validation
 
 Use the existing isolated checkout, Node/npm, and local MongoDB prepared by onboarding. Start the retained `mechanic-shop-mongo` container, confirm `mongosh` ping, then run:
@@ -153,12 +210,16 @@ npm run test:browser
 
 `npm test` runs the existing shared service/appointment-validation tests and the new pure date/calendar utility tests using Node's test runner, with no added unit-test framework. The calendar tests cover weekday alignment, leap dates, month/year boundaries, timezone conversion, horizons, and 12-hour labels. Backend month-API regressions compare summaries with single-day slots, count bounded database reads, verify dynamic horizons/leap dates/both daylight-saving transitions, and check privacy, invalid input, public access, and unchanged stored settings.
 
-`npm run test:browser` uses the development-only `@playwright/test` and `axe-core` packages and runs both browser specs. Install Chromium once with `npx playwright install chromium` if no browser is available; the config also uses `/usr/bin/chromium` when installed, or `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for an explicit path. Playwright starts Vite on port 5174 and runs Chromium at desktop (1440×1000), tablet (768×1024), and mobile (390×844) widths. Firefox and WebKit are outside this automated browser coverage.
+`npm run test:browser` uses the development-only `@playwright/test` and `axe-core` packages and runs all customer and mechanic browser specs. Install Chromium once with `npx playwright install chromium` if no browser is available; the config also uses `/usr/bin/chromium` when installed, or `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for an explicit path. Playwright starts Vite on port 5174 and runs Chromium at desktop (1440×1000), tablet (768×1024), and mobile (390×844) widths. Firefox and WebKit are outside this automated browser coverage.
 
 `tests/booking-calendar.spec.js` mocks availability and booking responses, requires no MongoDB or SMTP, and sends no real customer requests or emails. Run only these tests with `npm run test:browser -- tests/booking-calendar.spec.js`. They exercise API-provided slots, resets, loading/empty/error/retry states, stale responses, request counts, keyboard navigation, explicit review/send, pending/confirmed messages, scheduling-metadata changes between review/send, conflict recovery with preserved details, overflow/touch-target checks, and an automated WCAG accessibility audit.
 
 `tests/booking-calendar.integration.spec.js` requires the same local MongoDB or `TEST_MONGODB_URI` as the backend integration suite. Each test owns a random `eds_calendar_browser_test_<UUID>` database, starts an isolated Express API with notifications explicitly disabled, and routes all browser API traffic to that server. It never loads the application's `.env`, touches the normal shop database, or creates an email transport. It verifies a customer request remains pending and persists correctly, appears in the existing mechanic dashboard, receives a CSRF-protected manual confirmation, and becomes inaccessible after logout (private reads return 401). It also verifies saved scheduling settings remain unchanged. Cleanup verifies the database's random test prefix before dropping only that test database.
 
-The completed calendar verification passed 109 backend tests, 33 frontend/shared tests, 54 mocked browser cases, and three isolated full-stack browser cases, with clean ESLint and production build results. Browser tests use synthetic customers only; external Brevo delivery remains untested, and neither suite enables automatic booking or changes real business settings.
+`tests/mechanic-scheduling.spec.js` and `tests/mechanic-fixture.js` exercise the staff workflow against real isolated Express/MongoDB instances. Run this spec alone with `npm run test:browser -- tests/mechanic-scheduling.spec.js`. Each test creates and removes only its own random `eds_dashboard_browser_test_<UUID>` database, uses synthetic customer information and disabled notifications, and intercepts every browser API request so no request reaches the normal shop backend. The tests deliberately use a non-U.S. browser locale and a timezone different from the shop, while verifying numeric U.S. dates, AM/PM display, and shop-local UTC block conversion. No new test dependencies or production credentials are required beyond the existing MongoDB/Chromium setup.
+
+The backend suite also covers the staff settings API workflow: persisted split hours/closed weekdays/breaks, closure/block lifecycle and privacy, revision conflicts with explicit partial retry, policy/duration updates retaining historical snapshots, and configuration/block conflicts that leave reservations and appointments unchanged. Block revision regressions verify stale-timezone rejection with no write, fresh timezone conversion after reload, a forced concurrent timezone/block CAS race, invalid preconditions, guarded removal, and backward-compatible UTC-only clients. The dashboard browser suite extends coverage to editing, confirmation safeguards, revision recovery, private-state clearing, responsive layouts, and U.S. date/time display. All tests use synthetic customers and isolated data. Tests may exercise automation flags only in isolated fixtures; they do not enable automatic booking or change actual shop settings. External Brevo delivery remains untested.
+
+Final Prompt 4 validation passed **117 backend tests**, **48 frontend/shared tests**, and **102 browser cases** (57 customer calendar cases, three real booking/dashboard cases, and 42 staff scheduling cases) across desktop, tablet, and mobile widths. ESLint, the production build, and whitespace checks passed. Automated WCAG 2 A/AA and 2.1 AA audits reported no violations and no horizontal overflow. Chromium layouts were visually reviewed; manual Firefox/Safari and assistive-technology checks remain outside this run, as does live Brevo delivery.
 
 Start the API with `cd server && npm start`, and Vite from the root with `npm run dev -- --host 0.0.0.0 --port 5173 --strictPort`. Keep SMTP unset for synthetic local checks. External Brevo delivery is not tested here; its dispatcher/session protections are retained and notification tests cover pending/automatic receipts and retry behavior.
