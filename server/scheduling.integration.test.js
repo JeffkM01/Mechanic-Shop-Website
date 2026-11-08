@@ -688,6 +688,139 @@ test("public API validates bookings and returns availability without private cus
   assert.equal((await api("/api/appointments", { method: "POST", body: request() })).status, 409);
 });
 
+test("calendar availability uses one snapshot and occupancy read and agrees with daily availability", async (t) => {
+  const { scheduling, Appointment, SchedulingState } = await fixture(t);
+  await scheduling.updateSettings({ closedDates: ["2026-11-12"] });
+  await scheduling.addBlockedPeriod({
+    startAt: "2026-11-13T14:00:00.000Z", endAt: "2026-11-13T23:00:00.000Z", reason: "Private full-day block",
+  });
+  // A historical confirmed repair can occupy the whole working day, including
+  // today's lunch policy. The summary must respect that existing occupancy.
+  await Appointment.create(request({
+    status: "confirmed", scheduling: { durationMinutes: 540, bufferMinutes: 0, timezone: "America/Chicago" },
+  }));
+  const before = await SchedulingState.findById("shop").lean();
+  const findAppointments = Appointment.find;
+  const findState = SchedulingState.findById;
+  let appointmentReads = 0;
+  let stateReads = 0;
+  Appointment.find = function (...args) { appointmentReads++; return findAppointments.apply(this, args); };
+  SchedulingState.findById = function (...args) { stateReads++; return findState.apply(this, args); };
+  let calendar;
+  try { calendar = await scheduling.getCalendarAvailability("Oil Change", "2026-11"); }
+  finally { Appointment.find = findAppointments; SchedulingState.findById = findState; }
+  assert.equal(appointmentReads, 1);
+  assert.equal(stateReads, 1);
+  assert.equal(calendar.today, "2026-11-09");
+  assert.equal(calendar.firstDate, "2026-11-09");
+  assert.equal(calendar.lastDate, "2026-11-23");
+  assert.equal(calendar.generatedAt, initialTime);
+  assert.equal(calendar.days.length, 15, "the horizon's final calendar day is included");
+  assert.equal(calendar.days.find(day => day.date === appointmentDate).available, false);
+  assert.equal(calendar.days.find(day => day.date === "2026-11-12").available, false);
+  assert.equal(calendar.days.find(day => day.date === "2026-11-13").available, false);
+  assert.equal(calendar.days.find(day => day.date === "2026-11-14").available, false);
+  assert.equal(calendar.days.find(day => day.date === "2026-11-16").available, true);
+  for (const day of calendar.days) {
+    const daily = await scheduling.getAvailability(calendar.service, day.date);
+    assert.equal(day.available, daily.slots.length > 0, day.date);
+    assert.deepEqual(calendar.policy, daily.policy);
+    assert.equal(calendar.durationMinutes, daily.durationMinutes);
+    assert.equal(calendar.settingsProvisional, daily.settingsProvisional);
+  }
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), before, "reading the calendar cannot change settings or reservations");
+});
+
+test("calendar bounds follow saved horizons across leap dates and month boundaries with at most 31 days", async (t) => {
+  const { scheduling } = await fixture(t, "2028-02-27T12:00:00.000Z");
+  await scheduling.updateSettings({ bookingHorizonDays: 3 });
+  const february = await scheduling.getCalendarAvailability("Air Filter Change");
+  assert.equal(february.service, "Engine Air Filter Replacement");
+  assert.equal(february.month, "2028-02");
+  assert.equal(february.durationMinutes, 30);
+  assert.equal(february.lastDate, "2028-03-01");
+  assert.deepEqual(february.days.map(day => day.date), ["2028-02-27", "2028-02-28", "2028-02-29"]);
+  assert.deepEqual((await scheduling.getCalendarAvailability("Oil Change", "2028-03")).days,
+    [{ date: "2028-03-01", available: true }]);
+  await scheduling.updateSettings({ bookingHorizonDays: 40 });
+  const march = await scheduling.getCalendarAvailability("Oil Change", "2028-03");
+  assert.equal(march.lastDate, "2028-04-07");
+  assert.equal(march.days.length, 31);
+  assert.equal(march.days[0].date, "2028-03-01");
+  assert.equal(march.days.at(-1).date, "2028-03-31");
+  const april = await scheduling.getCalendarAvailability("Oil Change", "2028-04");
+  assert.equal(april.days.length, 7);
+  assert.equal(april.days.at(-1).date, "2028-04-07");
+  await assert.rejects(scheduling.getCalendarAvailability("Oil Change", "2028-05"), invalid);
+});
+
+test("calendar defaults to the server's shop-local month and keeps date bounds across daylight saving", async (t) => {
+  const { scheduling, setTime } = await fixture(t, "2028-03-01T01:00:00.000Z");
+  await scheduling.updateSettings({ bookingHorizonDays: 3 });
+  const localFebruary = await scheduling.getCalendarAvailability("Oil Change");
+  assert.equal(localFebruary.today, "2028-02-29", "UTC is already March but Chicago is still February");
+  assert.equal(localFebruary.month, "2028-02");
+  assert.equal(localFebruary.firstDate, "2028-02-29");
+  assert.equal(localFebruary.lastDate, "2028-03-03");
+  assert.deepEqual(localFebruary.days, [{ date: "2028-02-29", available: false }]);
+  await scheduling.updateSettings({ bookingHorizonDays: 14 });
+  for (const [clock, firstDate, lastDate, transitionDate, workingDate] of [
+    ["2027-03-08T12:00:00.000Z", "2027-03-08", "2027-03-22", "2027-03-14", "2027-03-15"],
+    ["2027-11-01T11:00:00.000Z", "2027-11-01", "2027-11-15", "2027-11-07", "2027-11-08"],
+  ]) {
+    setTime(clock);
+    const calendar = await scheduling.getCalendarAvailability("Oil Change");
+    assert.equal(calendar.firstDate, firstDate);
+    assert.equal(calendar.lastDate, lastDate);
+    assert.equal(calendar.days.length, 15);
+    assert.equal(calendar.days.find(day => day.date === transitionDate).available, false);
+    assert.equal(calendar.days.find(day => day.date === workingDate).available, true);
+    for (const day of calendar.days) {
+      assert.equal(day.available, (await scheduling.getAvailability("Oil Change", day.date)).slots.length > 0, day.date);
+    }
+  }
+});
+
+test("the public calendar endpoint validates input and exposes only bounded, sanitized metadata without authentication", async (t) => {
+  const { api, scheduling, SchedulingState } = await httpFixture(t);
+  const booked = await api("/api/appointments", { method: "POST", body: request() });
+  assert.equal(booked.status, 201);
+  const block = await scheduling.addBlockedPeriod({
+    startAt: "2026-11-12T14:00:00.000Z", endAt: "2026-11-12T23:00:00.000Z", reason: "Private calendar block reason",
+  });
+  const before = await SchedulingState.findById("shop").lean();
+  const calendar = await api("/api/availability/calendar?service=Air+Filter+Change");
+  assert.equal(calendar.status, 200, "no mechanic cookie or CSRF token is required");
+  assert.equal(calendar.response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(Object.keys(calendar.body).sort(), [
+    "service", "month", "timezone", "today", "firstDate", "lastDate", "durationMinutes", "policy", "settingsProvisional", "days", "generatedAt",
+  ].sort());
+  assert.equal(calendar.body.service, "Engine Air Filter Replacement");
+  assert.equal(calendar.body.month, "2026-11");
+  assert.equal(calendar.body.timezone, "America/Chicago");
+  assert.equal(calendar.body.settingsProvisional, true);
+  assert.equal(calendar.body.policy.automaticBookingEnabled, false);
+  for (const day of calendar.body.days) {
+    assert.deepEqual(Object.keys(day).sort(), ["available", "date"]);
+    assert.equal(typeof day.available, "boolean");
+  }
+  const json = JSON.stringify(calendar.body);
+  for (const privateValue of [request().name, request().email, request().phone, request().vehicle, request().notes, booked.body.id, block.id, block.reason]) {
+    assert.ok(!json.includes(privateValue));
+  }
+  for (const query of [
+    "", "month=2026-11", "service=Unknown", "service=Oil+Change&service=Tire+Rotation",
+    "service=Oil+Change&month=", "service=Oil+Change&month=2026-00", "service=Oil+Change&month=2026-13",
+    "service=Oil+Change&month=2026-1", "service=Oil+Change&month=2026-11-01", "service=Oil+Change&month=0000-01",
+    "service=Oil+Change&month=2026-11&month=2026-11", "service=Oil+Change&month=2026-10", "service=Oil+Change&month=2026-12",
+  ]) {
+    const rejected = await api(`/api/availability/calendar?${query}`);
+    assert.equal(rejected.status, 400, query);
+    assert.equal(rejected.response.headers.get("cache-control"), "no-store");
+  }
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), before);
+});
+
 test("the mechanic HTTP confirmation endpoint rejects a conflicting expired request without changing its status", async (t) => {
   const { api, scheduling, Appointment, authorizedHeaders, advance } = await httpFixture(t);
   const expired = await scheduling.createAppointment(request());
