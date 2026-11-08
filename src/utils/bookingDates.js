@@ -1,3 +1,5 @@
+import { resolveShopLocalTime } from "../../shared/shopTime.js";
+
 // Booking dates are shop-calendar dates, not instants in the customer's timezone.
 // UTC is used only for Gregorian arithmetic and formatting date-only values.
 function dateParts(value) {
@@ -58,12 +60,17 @@ export function monthLabel(month) {
 
 export function formatBookingDate(value) {
   const date = dateParts(value);
-  return date ? new Intl.DateTimeFormat("en-US", {
-    weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "UTC",
-  }).format(date) : "";
+  if (!date) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    calendar: "iso8601", numberingSystem: "latn",
+    month: "2-digit", day: "2-digit", year: "numeric", timeZone: "UTC",
+  }).formatToParts(date);
+  const get = type => parts.find(part => part.type === type).value;
+  return `${get("month")}/${get("day")}/${get("year").padStart(4, "0")}`;
 }
 
 export function formatBookingTime(value) {
+  if (value === "24:00") return "12:00 AM (next day)";
   if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return "";
   const [hour, minute] = value.split(":").map(Number);
   return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
@@ -85,4 +92,38 @@ export function dateInTimezone(instant, timeZone) {
   } catch {
     return null;
   }
+}
+
+
+// Explicit display fields avoid native date/time inputs whose presentation
+// follows the visitor's OS locale. Only canonical ISO/HH:MM values reach APIs.
+export function parseDisplayDate(value) {
+  if (typeof value !== "string" || !/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return "";
+  const [month, day, year] = value.split("/");
+  const date = `${year}-${month}-${day}`;
+  return isBookingDate(date) ? date : "";
+}
+
+export function parseDisplayTime(value, allowEnd = false) {
+  if (allowEnd && value === "12:00 AM (next day)") return "24:00";
+  if (typeof value !== "string") return "";
+  const match = /^(0?[1-9]|1[0-2]):([0-5]\d) (AM|PM)$/i.exec(value.trim());
+  if (!match) return "";
+  const hour = Number(match[1]) % 12 + (match[3].toUpperCase() === "PM" ? 12 : 0);
+  return `${String(hour).padStart(2, "0")}:${match[2]}`;
+}
+
+export function formatShopTimestamp(instant, timeZone) {
+  if (!dateInTimezone(instant, timeZone)) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone, calendar: "iso8601", numberingSystem: "latn",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  }).formatToParts(new Date(instant));
+  const get = type => parts.find(part => part.type === type)?.value;
+  return `${get("month")}/${get("day")}/${get("year").padStart(4, "0")} at ${get("hour")}:${get("minute")} ${get("dayPeriod")}`;
+}
+
+export function shopLocalToUtc(date, time, timezone) {
+  return resolveShopLocalTime(date, time, timezone).toISOString();
 }

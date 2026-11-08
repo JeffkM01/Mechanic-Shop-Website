@@ -1,8 +1,8 @@
 import { SERVICES, getService } from "../shared/services.js";
+import { resolveShopLocalTime, shopTimezoneFormatter, ShopTimeError } from "../shared/shopTime.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const formatters = new Map();
 const canonicalNames = SERVICES.map(({ name }) => name);
 const approvalOnlyServices = SERVICES.filter(({ category }) => category === "repairs").map(({ name }) => name);
 const settingsKeys = [
@@ -89,21 +89,11 @@ function addDays(date, days) {
 }
 
 function formatter(timezone) {
-  if (typeof timezone !== "string" || timezone.length > 100) invalid("Timezone is invalid.");
-  if (!formatters.has(timezone)) {
-    try {
-      formatters.set(timezone, new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        calendar: "iso8601",
-        numberingSystem: "latn",
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-      }));
-    } catch {
-      invalid("Timezone must be a supported IANA timezone.", "INVALID_TIMEZONE");
-    }
+  try { return shopTimezoneFormatter(timezone); }
+  catch (error) {
+    if (error instanceof ShopTimeError) invalid(error.message, error.code);
+    throw error;
   }
-  return formatters.get(timezone);
 }
 
 function zonedParts(date, timezone) {
@@ -125,32 +115,14 @@ export function dateInZone(date, timezone) {
   return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
-// Resolve the wall clock time against all offsets around that date. A gap has
-// no matching instant; a fall-back fold has two. Both are rejected, never guessed.
+// The customer/staff UI and backend share the exact offset resolver. Preserve
+// the public SchedulingError status/code contract at the server boundary.
 export function localDateTimeToUtc(date, time, timezone) {
-  const calendarDay = parseDate(date);
-  const minutes = parseTime(time);
-  formatter(timezone);
-  const wall = calendarDay.getTime() + minutes * MINUTE;
-  const offsets = new Set();
-  for (let delta = -48 * HOUR; delta <= 48 * HOUR; delta += 6 * HOUR) {
-    const sample = new Date(wall + delta);
-    const parts = zonedParts(sample, timezone);
-    const local = utcDay(parts.year, parts.month, parts.day).getTime()
-      + (parts.hour * 60 + parts.minute) * MINUTE + parts.second * 1000;
-    offsets.add(local - sample.getTime());
+  try { return resolveShopLocalTime(date, time, timezone); }
+  catch (error) {
+    if (error instanceof ShopTimeError) invalid(error.message, error.code);
+    throw error;
   }
-  const matches = [...offsets].map((offset) => new Date(wall - offset)).filter((candidate) => {
-    const parts = zonedParts(candidate, timezone);
-    return parts.year === calendarDay.getUTCFullYear()
-      && parts.month === calendarDay.getUTCMonth() + 1
-      && parts.day === calendarDay.getUTCDate()
-      && parts.hour * 60 + parts.minute === minutes && parts.second === 0;
-  });
-  if (matches.length !== 1) {
-    invalid("This local time is missing or ambiguous because the timezone clock changes. Choose another time.", "LOCAL_TIME_UNAVAILABLE");
-  }
-  return matches[0];
 }
 
 function boundary(date, time, timezone) {

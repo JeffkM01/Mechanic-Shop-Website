@@ -349,11 +349,17 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
   }
 
   async function addBlockedPeriod(input) {
-    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["startAt", "endAt", "reason"].includes(key))) throw new SchedulingError(400, "Provide a blocked period with startAt, endAt, and an optional reason.");
-    const block = { id: randomUUID(), ...input };
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["startAt", "endAt", "reason", "revision"].includes(key))) throw new SchedulingError(400, "Provide a blocked period with startAt, endAt, and an optional reason and revision.");
+    const { revision, ...period } = input;
+    if (revision !== undefined && (!Number.isInteger(revision) || revision < 0)) throw new SchedulingError(400, "Provide a non-negative settings revision.");
+    const block = { id: randomUUID(), ...period };
     // Merge against the newest state on every CAS retry, rather than overwriting
     // blocks added by another mechanic request.
     await commit((state, _clock, current) => {
+      // The staff UI resolves wall-clock inputs with its saved timezone. Check
+      // that exact settings revision inside the same CAS as the block write,
+      // including every retry. Older UTC-only clients can omit this guard.
+      if (revision !== undefined && revision !== state.settingsRevision) throw new SchedulingError(409, "Scheduling settings changed. Reload them and review the blocked time before saving.", "SETTINGS_CHANGED");
       const settings = mergeSettings(state.settings, { blockedPeriods: [...state.settings.blockedPeriods, block] });
       if (current.occupancies.some(item => overlaps({ startAt: block.startAt, endAt: block.endAt }, item))) throw new SchedulingError(409, "This blocked period conflicts with a held or confirmed appointment.", "BLOCK_CONFLICT");
       return { next: { settings, settingsRevision: state.settingsRevision + 1 }, result: null };
@@ -361,8 +367,10 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return block;
   }
 
-  async function removeBlockedPeriod(id) {
+  async function removeBlockedPeriod(id, { expectedRevision } = {}) {
+    if (expectedRevision !== undefined && (!Number.isInteger(expectedRevision) || expectedRevision < 0)) throw new SchedulingError(400, "Provide a non-negative settings revision.");
     await commit((state) => {
+      if (expectedRevision !== undefined && expectedRevision !== state.settingsRevision) throw new SchedulingError(409, "Scheduling settings changed. Reload them and review the blocked time before removing it.", "SETTINGS_CHANGED");
       if (!state.settings.blockedPeriods.some(block => block.id === id)) throw new SchedulingError(404, "Blocked period not found.");
       const settings = mergeSettings(state.settings, { blockedPeriods: state.settings.blockedPeriods.filter(block => block.id !== id) });
       return { next: { settings, settingsRevision: state.settingsRevision + 1 }, result: null };

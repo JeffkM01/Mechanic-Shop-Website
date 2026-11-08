@@ -118,7 +118,7 @@ test("a calendar request persists pending, reaches the mechanic, and can be appr
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     const card = page.getByRole("article").filter({ has: page.getByRole("heading", { name: customer.name, exact: true }) });
     await expect(card).toBeVisible();
-    for (const detail of [service, customer.vehicle, customer.email, customer.phone, customer.notes, `${date} at ${time}`]) {
+    for (const detail of [service, customer.vehicle, customer.email, customer.phone, customer.notes, `${formatBookingDate(date)} at ${formatBookingTime(time)}`]) {
       await expect(card).toContainText(detail);
     }
     await expect(card.locator(".mechanic-status")).toHaveText("pending");

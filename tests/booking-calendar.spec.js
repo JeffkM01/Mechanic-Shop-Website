@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import axe from "axe-core";
 import { SERVICE_CATEGORIES, SERVICES } from "../shared/services.js";
+import { formatBookingDate } from "../src/utils/bookingDates.js";
 
 // Deliberately use a shop date, timezone, and horizon unrelated to the browser's
 // clock. The customer UI must use the API's calendar bounds and date-only values.
@@ -128,10 +129,7 @@ async function mockScheduling(page, overrides = {}) {
 }
 
 function dateButton(page, date) {
-  const label = new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC", month: "long", day: "numeric", year: "numeric",
-  }).format(new Date(`${date}T12:00:00Z`));
-  return page.getByRole("grid").getByRole("button", { name: new RegExp(label, "i") });
+  return page.getByRole("grid").getByRole("button", { name: new RegExp(formatBookingDate(date), "i") });
 }
 
 async function openBooking(page, service = "Oil Change") {
@@ -357,7 +355,7 @@ test("limits calendar navigation to server bounds, preserves date-only labels, a
   await expect(grid.getByRole("columnheader")).toHaveCount(7);
   await expect(page.getByRole("button", { name: /previous month/i })).toBeDisabled();
   const first = dateButton(page, "2030-01-30");
-  await expect(first).toHaveAccessibleName(/Wednesday.*January 30, 2030.*available/i);
+  await expect(first).toHaveAccessibleName(/01\/30\/2030.*available/i);
   await first.focus();
   await page.keyboard.press("ArrowRight");
   await expect(dateButton(page, "2030-01-31")).toBeFocused();
@@ -403,7 +401,7 @@ test("freshly checks review and send, shows the complete summary, and never post
   for (const value of ["Oil Change", "8:00 AM", SHOP.timezone, CUSTOMER.name, CUSTOMER.email, CUSTOMER.phone, CUSTOMER.vehicle, CUSTOMER.notes]) {
     await expect(summary).toContainText(value);
   }
-  await expect(summary).toContainText(/January 30, 2030/);
+  await expect(summary).toContainText(/01\/30\/2030/);
   await expect(summary).toContainText(/60 minutes/);
   await page.getByRole("button", { name: /edit details/i }).click();
   expect(state.posts).toHaveLength(0);
@@ -556,4 +554,24 @@ test("keeps the calendar and review usable without overflow and passes an automa
     return results.violations.map(({ id, impact, description, nodes }) => ({ id, impact, description, targets: nodes.map((node) => node.target) }));
   });
   expect(violations).toEqual([]);
+});
+
+test.describe("American display independent of visitor settings", () => {
+  test.use({ locale: "en-GB", timezoneId: "Asia/Tokyo" });
+  test("keeps numeric U.S. dates and AM/PM in review and success for a non-U.S. visitor", async ({ page }) => {
+    const state = await mockScheduling(page);
+    await openBooking(page);
+    await selectTime(page);
+    await fillCustomer(page);
+    await reviewRequest(page);
+    const summary = page.getByRole("region", { name: "Review your appointment request." });
+    await expect(summary).toContainText("01/30/2030");
+    await expect(summary).toContainText("8:00 AM");
+    await expect(summary).not.toContainText("30/01/2030");
+    await page.getByRole("button", { name: "Send Appointment Request", exact: true }).click();
+    await expect(page.getByText(PENDING_MESSAGE, { exact: true })).toBeVisible();
+    await expect(page.locator('time[datetime="2030-01-30T23:00:00.000Z"]')).toHaveText("01/30/2030 at 1:00 PM");
+    await expect(page.locator(".booking-success .booking-summary")).toContainText("01/30/2030");
+    expect(state.posts[0]).toMatchObject({ date: "2030-01-30", time: "08:00" });
+  });
 });

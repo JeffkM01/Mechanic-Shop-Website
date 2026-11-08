@@ -4,7 +4,7 @@ import { SERVICE_CATEGORIES, SERVICES, getService, getServiceSelection } from ".
 import { Icon } from "../components/CustomerUI";
 import BookingCalendar from "../components/BookingCalendar";
 import useBookingAvailability from "../hooks/useBookingAvailability";
-import { formatBookingDate, formatBookingTime } from "../utils/bookingDates";
+import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
 import { validateAppointment } from "../utils/appointmentValidation";
 import "../styles/Appointment.css";
 
@@ -172,7 +172,7 @@ function BookingExperience({ initialService, details, setDetails }) {
         <h2 id="booking-success-heading" tabIndex={-1} ref={successHeading}>{saved.status === "confirmed" ? "You’re on the schedule." : "Your next step is in good hands."}</h2>
         <p className="booking-success-message" role="status">{saved.status === "pending" ? "Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet." : "Your appointment has been confirmed. The service duration is a booking estimate, not a guaranteed repair completion time."}</p>
         <div className="booking-reference"><span>YOUR REFERENCE ID</span><strong>{saved.id}</strong></div>
-        {saved.status === "pending" && saved.holdExpiresAt && <p className="booking-hold">Your provisional time reservation expires <time dateTime={saved.holdExpiresAt}>{new Date(saved.holdExpiresAt).toLocaleString(undefined, { timeZone: saved.request.timezone })}</time> ({saved.request.timezone}). Your request stays on file after expiry, but availability must be checked again before approval.</p>}
+        {saved.status === "pending" && saved.holdExpiresAt && <p className="booking-hold">Your provisional time reservation expires <time dateTime={saved.holdExpiresAt}>{formatShopTimestamp(saved.holdExpiresAt, saved.request.timezone)}</time> ({saved.request.timezone}). Your request stays on file after expiry, but availability must be checked again before approval.</p>}
         <Summary request={saved.request} />
         {saved.emailNotification === "queued" && <p className="booking-receipt-note">A status email has been queued for delivery. Keep your reference ID for your records.</p>}
         <div className="booking-actions"><button type="button" className="button button-primary" onClick={anotherRequest}>Make another request <Icon name="arrow" /></button><Link className="text-link" to="/">Back to the shop</Link></div>

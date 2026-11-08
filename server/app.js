@@ -85,7 +85,8 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
   });
 
   app.delete("/api/mechanic/scheduling/blocks/:id", auth.requireAuth, auth.requireCsrf, async (req, res, next) => {
-    try { res.json(await scheduling.removeBlockedPeriod(req.params.id)); } catch (error) { next(error); }
+    if (req.body !== undefined && (!req.body || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).some(key => key !== "revision"))) return res.status(400).json({ error: "Provide only an optional settings revision." });
+    try { res.json(await scheduling.removeBlockedPeriod(req.params.id, { expectedRevision: req.body?.revision })); } catch (error) { next(error); }
   });
 
   app.use((error, _req, res, _next) => {

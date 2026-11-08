@@ -5,7 +5,7 @@ import mongoose from "mongoose";
 import { appointmentSchema } from "./Appointment.js";
 import { schedulingStateSchema } from "./SchedulingState.js";
 import { createSchedulingService } from "./schedulingService.js";
-import { defaultSettings } from "./schedulingRules.js";
+import { defaultSettings, localDateTimeToUtc } from "./schedulingRules.js";
 import { createApp } from "./app.js";
 import { createMechanicAuth } from "./mechanicAuth.js";
 import { createEmailNotifications } from "./emailNotifications.js";
@@ -837,6 +837,348 @@ test("the mechanic HTTP confirmation endpoint rejects a conflicting expired requ
   });
   assert.equal(accepted.status, 200);
   assert.equal((await Appointment.findById(replacement.id)).status, "confirmed");
+});
+
+test("the authenticated weekly editor persists split hours, closed weekdays, and recurring breaks without resetting other settings", async (t) => {
+  const { api, cookieHeaders, authorizedHeaders, scheduling, otherScheduling } = await httpFixture(t);
+  await scheduling.updateSettings({ businessHoursVerified: true, capacityVerified: true, maxAutomaticPerDay: 7 });
+  const original = await api("/api/mechanic/scheduling/settings", { headers: cookieHeaders });
+  assert.equal(original.status, 200);
+  const updated = await api("/api/mechanic/scheduling/settings", {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: original.body.revision, settings: {
+      weeklyHours: { "3": [{ start: "08:00", end: "12:00" }, { start: "13:00", end: "17:00" }], "4": [] },
+      breaks: [{ start: "09:30", end: "10:00" }],
+    } },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.revision, original.body.revision + 1);
+  assert.equal(updated.body.settings.businessHoursVerified, false, "changed hours must require a fresh explicit verification");
+  assert.equal(updated.body.settings.capacityVerified, true);
+  assert.equal(updated.body.settings.automaticBookingEnabled, false);
+  assert.equal(updated.body.settings.maxAutomaticPerDay, 7, "saving hours cannot reset unrelated persisted settings");
+  assert.deepEqual(updated.body.settings.weeklyHours["1"], original.body.settings.weeklyHours["1"]);
+  assert.deepEqual(await otherScheduling.getSettings(), updated.body, "another API process reads the saved configuration");
+  assert.deepEqual((await api("/api/mechanic/scheduling/settings", { headers: cookieHeaders })).body, updated.body);
+  const wednesday = times(await scheduling.getAvailability("Oil Change", appointmentDate));
+  assert.ok(wednesday.includes("08:00"));
+  assert.ok(!wednesday.includes("08:30"), "the recurring break blocks the service plus its buffer");
+  assert.ok(wednesday.includes("10:00"));
+  assert.ok(!wednesday.includes("11:00"), "the service and buffer must fit inside one split work interval");
+  assert.ok(wednesday.includes("13:00"));
+  assert.deepEqual(times(await scheduling.getAvailability("Oil Change", "2026-11-12")), [], "a saved closed weekday is unavailable");
+  for (const patch of [
+    { weeklyHours: { "3": [{ start: "10:00", end: "09:00" }] } },
+    { weeklyHours: { "3": [{ start: "08:00", end: "11:00" }, { start: "10:30", end: "12:00" }] } },
+    { breaks: [{ start: "10:00", end: "11:00" }, { start: "10:30", end: "11:30" }] },
+  ]) {
+    const invalidEdit = await api("/api/mechanic/scheduling/settings", {
+      method: "PATCH", headers: authorizedHeaders,
+      body: { revision: updated.body.revision, settings: patch },
+    });
+    assert.equal(invalidEdit.status, 400);
+    assert.deepEqual(await scheduling.getSettings(), updated.body, "invalid interval edits must leave all saved values and the revision intact");
+  }
+});
+
+test("closed-date and dedicated blocked-time management update public availability without exposing private reasons", async (t) => {
+  const { api, cookieHeaders, authorizedHeaders, scheduling } = await httpFixture(t);
+  const settingsPath = "/api/mechanic/scheduling/settings";
+  const blockPath = "/api/mechanic/scheduling/blocks";
+  const date = "2026-11-12";
+  const initial = await scheduling.getSettings();
+  const closed = await api(settingsPath, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: initial.revision, settings: { closedDates: [date] } },
+  });
+  assert.equal(closed.status, 200);
+  assert.deepEqual(closed.body.settings.closedDates, [date]);
+  assert.deepEqual(times(await scheduling.getAvailability("Oil Change", date)), []);
+  const duplicate = await api(settingsPath, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: closed.body.revision, settings: { closedDates: [date, date] } },
+  });
+  assert.equal(duplicate.status, 400);
+  assert.deepEqual(await scheduling.getSettings(), closed.body);
+  const reopened = await api(settingsPath, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: closed.body.revision, settings: { closedDates: [] } },
+  });
+  assert.equal(reopened.status, 200);
+  assert.ok(times(await scheduling.getAvailability("Oil Change", date)).includes("08:00"));
+  const blockInput = { startAt: `${date}T14:00:00.000Z`, endAt: `${date}T16:00:00.000Z`, reason: "Private equipment service reference 4829" };
+  const created = await api(blockPath, { method: "POST", headers: authorizedHeaders, body: blockInput });
+  assert.equal(created.status, 201);
+  const saved = await api(settingsPath, { headers: cookieHeaders });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.revision, reopened.body.revision + 1, "dedicated block changes advance the settings editor revision");
+  assert.deepEqual(saved.body.settings.blockedPeriods, [created.body]);
+  assert.equal(created.body.reason, blockInput.reason, "authenticated settings retain the staff-only reason");
+  const daily = await api(`/api/availability?service=Oil+Change&date=${date}`);
+  const calendar = await api("/api/availability/calendar?service=Oil+Change&month=2026-11");
+  assert.equal(daily.status, 200);
+  assert.equal(calendar.status, 200);
+  assert.ok(!times(daily.body).includes("08:00"));
+  assert.ok(times(daily.body).includes("10:00"));
+  for (const response of [daily, calendar]) {
+    assert.ok(!JSON.stringify(response.body).includes(blockInput.reason));
+    assert.ok(!JSON.stringify(response.body).includes(created.body.id));
+  }
+  assert.equal((await api(`${blockPath}/${created.body.id}`, { method: "DELETE" })).status, 401);
+  assert.equal((await api(`${blockPath}/${created.body.id}`, { method: "DELETE", headers: cookieHeaders })).status, 403);
+  assert.deepEqual(await scheduling.getSettings(), saved.body, "unauthorized removal cannot release a block");
+  assert.equal((await api(`${blockPath}/${created.body.id}`, { method: "DELETE", headers: authorizedHeaders })).status, 200);
+  assert.ok(times(await scheduling.getAvailability("Oil Change", date)).includes("08:00"));
+  assert.deepEqual((await scheduling.getSettings()).settings.blockedPeriods, []);
+});
+
+test("stale settings revisions return a reviewable conflict and cannot overwrite a newer configuration or dedicated block", async (t) => {
+  const { api, authorizedHeaders, scheduling } = await httpFixture(t);
+  const path = "/api/mechanic/scheduling/settings";
+  const initial = await scheduling.getSettings();
+  const newer = await api(path, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: initial.revision, settings: { minimumNoticeHours: 12 } },
+  });
+  assert.equal(newer.status, 200);
+  const stale = await api(path, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: initial.revision, settings: { capacity: 3, minimumNoticeHours: initial.settings.minimumNoticeHours } },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "SETTINGS_CHANGED");
+  assert.match(stale.body.error, /reload/i);
+  assert.deepEqual(await scheduling.getSettings(), newer.body);
+  const block = await api("/api/mechanic/scheduling/blocks", {
+    method: "POST", headers: authorizedHeaders,
+    body: { startAt: "2026-11-12T14:00:00.000Z", endAt: "2026-11-12T15:00:00.000Z" },
+  });
+  assert.equal(block.status, 201);
+  const afterBlock = await scheduling.getSettings();
+  const staleAfterBlock = await api(path, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: newer.body.revision, settings: { capacity: 3 } },
+  });
+  assert.equal(staleAfterBlock.status, 409);
+  assert.equal(staleAfterBlock.body.code, "SETTINGS_CHANGED");
+  assert.deepEqual(await scheduling.getSettings(), afterBlock);
+  // A fresh read followed by an explicit partial resubmission preserves the
+  // newer administrator's notice and block instead of replaying a whole form.
+  const reviewed = await api(path, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: afterBlock.revision, settings: { capacity: 3 } },
+  });
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.body.settings.capacity, 3);
+  assert.equal(reviewed.body.settings.minimumNoticeHours, 12);
+  assert.deepEqual(reviewed.body.settings.blockedPeriods, afterBlock.settings.blockedPeriods);
+});
+
+test("policy and service estimate edits affect new availability without rewriting held or confirmed appointment snapshots", async (t) => {
+  const { api, authorizedHeaders, scheduling, Appointment, SchedulingState } = await httpFixture(t);
+  await scheduling.updateSettings({ capacity: 2, businessHoursVerified: true, capacityVerified: true });
+  const held = await scheduling.createAppointment(request());
+  const confirmed = await scheduling.createAppointment(request({ name: "Second Synthetic Customer" }));
+  await scheduling.reviewAppointment(confirmed.id, "confirmed");
+  const beforeRecords = await Appointment.find().sort({ _id: 1 }).lean();
+  const beforeLedger = await SchedulingState.findById("shop").lean();
+  const initial = await scheduling.getSettings();
+  const rejectedCapacity = await api("/api/mechanic/scheduling/settings", {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: initial.revision, settings: { capacity: 1 } },
+  });
+  assert.equal(rejectedCapacity.status, 409);
+  assert.equal(rejectedCapacity.body.code, "CAPACITY_CONFLICT");
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), beforeLedger);
+  const changed = await api("/api/mechanic/scheduling/settings", {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: initial.revision, settings: {
+      capacity: 3, maxAutomaticPerDay: 6, minimumNoticeHours: 6, bookingHorizonDays: 30,
+      startIncrementMinutes: 15, bufferMinutes: 5, pendingHoldHours: 48,
+      serviceRules: { "Oil Change": { durationMinutes: 30 } },
+    } },
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.settings.capacityVerified, false, "capacity edits must not inherit verification");
+  assert.equal(changed.body.settings.businessHoursVerified, true);
+  assert.equal(changed.body.settings.automaticBookingEnabled, false);
+  assert.equal(changed.body.settings.serviceRules["Oil Change"].durationMinutes, 30);
+  assert.deepEqual(await Appointment.find().sort({ _id: 1 }).lean(), beforeRecords);
+  const ledger = await SchedulingState.findById("shop").lean();
+  assert.deepEqual(ledger.reservations, beforeLedger.reservations, "existing reservation snapshots stay unchanged");
+  const availability = await scheduling.getAvailability("Oil Change", appointmentDate);
+  assert.equal(availability.durationMinutes, 30);
+  assert.equal(availability.policy.startIncrementMinutes, 15);
+  assert.equal(availability.policy.bufferMinutes, 5);
+  assert.ok(times(availability).includes("08:00"), "the newly added third capacity place is usable");
+  const newRequest = await scheduling.createAppointment(request({ name: "New Estimate Customer", time: "09:30" }));
+  assert.equal(newRequest.scheduling.durationMinutes, 30);
+  assert.equal(newRequest.scheduling.bufferMinutes, 5);
+  assert.equal(+newRequest.scheduling.holdExpiresAt - Date.parse(initialTime), 48 * HOUR);
+  assert.equal((await Appointment.findById(held.id)).scheduling.durationMinutes, 60);
+  assert.equal((await Appointment.findById(confirmed.id)).scheduling.durationMinutes, 60);
+});
+
+test("HTTP calendar and block conflicts preserve saved configuration, reservations, and appointment records", async (t) => {
+  const { api, authorizedHeaders, scheduling, Appointment, SchedulingState } = await httpFixture(t);
+  const booked = await scheduling.createAppointment(request());
+  const initial = await scheduling.getSettings();
+  const originalLedger = await SchedulingState.findById("shop").lean();
+  const originalAppointment = await Appointment.findById(booked.id).lean();
+  for (const patch of [
+    { closedDates: [appointmentDate] },
+    { weeklyHours: { "3": [] } },
+    { breaks: [{ start: "08:30", end: "09:30" }] },
+  ]) {
+    const rejected = await api("/api/mechanic/scheduling/settings", {
+      method: "PATCH", headers: authorizedHeaders,
+      body: { revision: initial.revision, settings: patch },
+    });
+    assert.equal(rejected.status, 409);
+    assert.equal(rejected.body.code, "CALENDAR_CONFLICT");
+    assert.deepEqual(await SchedulingState.findById("shop").lean(), originalLedger);
+    assert.deepEqual(await Appointment.findById(booked.id).lean(), originalAppointment);
+  }
+  const rejectedBlock = await api("/api/mechanic/scheduling/blocks", {
+    method: "POST", headers: authorizedHeaders,
+    body: { startAt: "2026-11-11T14:30:00.000Z", endAt: "2026-11-11T15:00:00.000Z", reason: "Conflicting private staff task" },
+  });
+  assert.equal(rejectedBlock.status, 409);
+  assert.equal(rejectedBlock.body.code, "BLOCK_CONFLICT");
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), originalLedger);
+  assert.deepEqual(await Appointment.findById(booked.id).lean(), originalAppointment);
+});
+
+test("revision-aware block creation rejects a stale timezone and accepts the explicitly reloaded shop-local conversion", async (t) => {
+  const { api, authorizedHeaders, cookieHeaders, scheduling, SchedulingState, Appointment } = await httpFixture(t);
+  const settingsPath = "/api/mechanic/scheduling/settings";
+  const blockPath = "/api/mechanic/scheduling/blocks";
+  const displayed = await scheduling.getSettings();
+  const date = "2026-11-12";
+  const oldStart = localDateTimeToUtc(date, "08:00", displayed.settings.timezone).toISOString();
+  const oldEnd = localDateTimeToUtc(date, "09:00", displayed.settings.timezone).toISOString();
+  assert.equal(oldStart, "2026-11-12T14:00:00.000Z");
+  const changed = await api(settingsPath, {
+    method: "PATCH", headers: authorizedHeaders,
+    body: { revision: displayed.revision, settings: { timezone: "America/New_York" } },
+  });
+  assert.equal(changed.status, 200);
+  const beforeBlock = await SchedulingState.findById("shop").lean();
+  const stale = await api(blockPath, {
+    method: "POST", headers: authorizedHeaders,
+    body: { startAt: oldStart, endAt: oldEnd, reason: "Private timezone-sensitive task", revision: displayed.revision },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "SETTINGS_CHANGED");
+  assert.match(stale.body.error, /reload.*review/i);
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), beforeBlock, "stale conversion must not create a block or advance either revision");
+  assert.equal(await Appointment.countDocuments(), 0);
+  const reloaded = await api(settingsPath, { headers: cookieHeaders });
+  assert.equal(reloaded.status, 200);
+  const freshStart = localDateTimeToUtc(date, "08:00", reloaded.body.settings.timezone).toISOString();
+  const freshEnd = localDateTimeToUtc(date, "09:00", reloaded.body.settings.timezone).toISOString();
+  assert.equal(freshStart, "2026-11-12T13:00:00.000Z");
+  const added = await api(blockPath, {
+    method: "POST", headers: authorizedHeaders,
+    body: { startAt: freshStart, endAt: freshEnd, revision: reloaded.body.revision },
+  });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.startAt, freshStart);
+  assert.equal(added.body.endAt, freshEnd);
+  assert.equal(Object.hasOwn(added.body, "revision"), false, "the precondition is not persisted as blocked-period data");
+  const saved = await scheduling.getSettings();
+  assert.equal(saved.settings.timezone, "America/New_York");
+  assert.deepEqual(saved.settings.blockedPeriods, [added.body]);
+});
+
+test("concurrent timezone and revision-aware block writes recheck their precondition after losing the MongoDB CAS", async (t) => {
+  const { scheduling, otherScheduling, SchedulingState } = await fixture(t);
+  const displayed = await scheduling.getSettings();
+  const before = await SchedulingState.findById("shop").lean();
+  const originalUpdate = SchedulingState.updateOne;
+  let arrivals = 0;
+  let release;
+  const bothWritersReady = new Promise(resolve => { release = resolve; });
+  // Force both independent coordinators to reach the write with the same
+  // snapshot. The losing writer must retry and then reject its stale revision,
+  // rather than applying the old Chicago-derived timestamp under New York.
+  SchedulingState.updateOne = async function (filter, ...args) {
+    if (filter._id === "shop" && filter.revision === before.revision && arrivals < 2) {
+      arrivals++;
+      if (arrivals === 2) release();
+      await bothWritersReady;
+    }
+    return originalUpdate.call(this, filter, ...args);
+  };
+  let outcomes;
+  try {
+    outcomes = await Promise.allSettled([
+      scheduling.updateSettings({ timezone: "America/New_York" }, { expectedRevision: displayed.revision }),
+      otherScheduling.addBlockedPeriod({
+        startAt: "2026-11-12T14:00:00.000Z", endAt: "2026-11-12T15:00:00.000Z", revision: displayed.revision,
+      }),
+    ]);
+  } finally { SchedulingState.updateOne = originalUpdate; }
+  assert.equal(arrivals, 2, "both writers must actually race on the original MongoDB snapshot");
+  assert.equal(outcomes.filter(outcome => outcome.status === "fulfilled").length, 1);
+  const rejected = outcomes.find(outcome => outcome.status === "rejected");
+  assert.equal(rejected.reason.status, 409);
+  assert.equal(rejected.reason.code, "SETTINGS_CHANGED");
+  const saved = await scheduling.getSettings();
+  assert.equal(saved.revision, displayed.revision + 1);
+  if (outcomes[0].status === "fulfilled") {
+    assert.equal(saved.settings.timezone, "America/New_York");
+    assert.deepEqual(saved.settings.blockedPeriods, []);
+  } else {
+    assert.equal(saved.settings.timezone, "America/Chicago");
+    assert.equal(saved.settings.blockedPeriods.length, 1);
+    assert.equal(saved.settings.blockedPeriods[0].startAt, "2026-11-12T14:00:00.000Z");
+  }
+});
+
+test("block revision validation and guarded removal preserve legacy UTC-only clients", async (t) => {
+  const { api, authorizedHeaders, scheduling, SchedulingState } = await httpFixture(t);
+  const path = "/api/mechanic/scheduling/blocks";
+  const period = { startAt: "2026-11-12T14:00:00.000Z", endAt: "2026-11-12T15:00:00.000Z" };
+  const displayed = await scheduling.getSettings();
+  const initialLedger = await SchedulingState.findById("shop").lean();
+  for (const revision of [-1, 0.5, "0", null, false, {}, []]) {
+    const rejected = await api(path, {
+      method: "POST", headers: authorizedHeaders, body: { ...period, revision },
+    });
+    assert.equal(rejected.status, 400, `POST revision ${JSON.stringify(revision)}`);
+    assert.deepEqual(await SchedulingState.findById("shop").lean(), initialLedger);
+  }
+  const created = await api(path, {
+    method: "POST", headers: authorizedHeaders, body: { ...period, revision: displayed.revision },
+  });
+  assert.equal(created.status, 201);
+  const oldRemovalSnapshot = await scheduling.getSettings();
+  await scheduling.updateSettings({ minimumNoticeHours: 12 });
+  const latest = await scheduling.getSettings();
+  const latestLedger = await SchedulingState.findById("shop").lean();
+  const stale = await api(`${path}/${created.body.id}`, {
+    method: "DELETE", headers: authorizedHeaders, body: { revision: oldRemovalSnapshot.revision },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "SETTINGS_CHANGED");
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), latestLedger, "stale removal must not release the block");
+  for (const body of [{ revision: -1 }, { revision: "1" }, { revision: null }, { revision: 0.5 }, { revision: latest.revision, reason: "unknown field" }, null, []]) {
+    const rejected = await api(`${path}/${created.body.id}`, { method: "DELETE", headers: authorizedHeaders, body });
+    assert.equal(rejected.status, 400, `DELETE body ${JSON.stringify(body)}`);
+    assert.deepEqual(await SchedulingState.findById("shop").lean(), latestLedger);
+  }
+  const removed = await api(`${path}/${created.body.id}`, {
+    method: "DELETE", headers: authorizedHeaders, body: { revision: latest.revision },
+  });
+  assert.equal(removed.status, 200);
+  assert.deepEqual((await scheduling.getSettings()).settings.blockedPeriods, []);
+  // Backward-compatible callers already hold UTC instants, so omitting the
+  // optional editor precondition keeps the original POST/DELETE contract.
+  const legacy = await api(path, { method: "POST", headers: authorizedHeaders, body: period });
+  assert.equal(legacy.status, 201);
+  assert.equal((await api(`${path}/${legacy.body.id}`, { method: "DELETE", headers: authorizedHeaders })).status, 200);
+  assert.deepEqual((await scheduling.getSettings()).settings.blockedPeriods, []);
 });
 
 test("settings, blocked periods, and appointment decisions retain mechanic authentication and CSRF protection", async (t) => {
