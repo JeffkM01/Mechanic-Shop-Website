@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { DECLINE_REASONS, DECLINE_EXPLANATION_MIN, DECLINE_MESSAGE_MAX } from "../shared/declineReasons.js";
 
 export const appointmentSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
@@ -10,6 +11,17 @@ export const appointmentSchema = new mongoose.Schema({
   time: { type: String, required: true }, // HH:MM, shop-local time
   notes: { type: String, default: "", maxlength: 1000 },
   status: { type: String, enum: ["pending", "confirmed", "declined"], default: "pending" },
+  // Legacy declined records intentionally have no invented reason. New staff
+  // declines persist this snapshot with terminal status and the queue flag.
+  decline: {
+    type: new mongoose.Schema({
+      category: { type: String, enum: DECLINE_REASONS.map(reason => reason.id), required: true },
+      explanation: { type: String, required: true, minlength: DECLINE_EXPLANATION_MIN, maxlength: DECLINE_MESSAGE_MAX },
+      declinedAt: { type: Date, required: true },
+      source: { type: String, enum: ["mechanic"], required: true },
+    }, { _id: false }),
+    default: undefined,
+  },
   // Optional snapshots preserve old records and their original service labels.
   scheduling: {
     type: new mongoose.Schema({

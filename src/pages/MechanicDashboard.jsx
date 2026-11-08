@@ -3,9 +3,12 @@ import { Icon } from "../components/CustomerUI";
 import BusinessHoursSettings from "../components/BusinessHoursSettings";
 import BookingSettings from "../components/BookingSettings";
 import ClosuresAndBlocks from "../components/ClosuresAndBlocks";
+import DeclineAppointmentDialog from "../components/DeclineAppointmentDialog";
+import { getDeclineReason } from "../../shared/declineReasons.js";
 import useMechanicSession from "../hooks/useMechanicSession";
 import useSchedulingSettings from "../hooks/useSchedulingSettings";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
+import { isValidEmailAddress, isValidUsPhone } from "../../shared/appointmentFields.js";
 import "../styles/MechanicDashboard.css";
 
 const sections = ["Appointments", "Business Hours", "Closures & Blocked Times", "Booking Settings"];
@@ -18,46 +21,79 @@ function Appointments({ request }) {
   const [refreshCount, setRefreshCount] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [declining, setDeclining] = useState(null);
+  const [declineFields, setDeclineFields] = useState({});
+  const [decisionUnknown, setDecisionUnknown] = useState(false);
+  const actionBusy = useRef(false);
 
   useEffect(() => {
     let active = true;
     request(`/appointments?status=${filter}`)
-      .then(data => { if (active) setAppointments(data.appointments || []); })
+      .then(data => {
+        if (!active) return;
+        const items = data.appointments || [];
+        setAppointments(items); setDecisionUnknown(false);
+        setDeclining(current => current && items.some(item => item._id === current._id && item.status === "pending") ? current : null);
+      })
       .catch(failure => { if (active) setError(failure.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [filter, refreshCount, request]);
 
-  async function changeStatus(id, status) {
-    setBusyId(id); setError(""); setNotice("");
+  function refreshAppointments() {
+    setLoading(true); setError(""); setDeclineFields({}); setRefreshCount(value => value + 1);
+  }
+
+  async function changeStatus(id, status, decline) {
+    if (actionBusy.current || decisionUnknown) return false;
+    actionBusy.current = true;
+    setBusyId(id); setError(""); setNotice(""); setDeclineFields({});
     try {
-      const result = await request(`/appointments/${id}`, { method: "PATCH", body: { status } });
+      const result = await request(`/appointments/${id}`, { method: "PATCH", body: { status, ...(decline ? { decline } : {}) } });
       setNotice(`Appointment ${status}. ${result.emailNotification === "queued" ? "A customer email has been queued for delivery." : "Email notifications are not configured yet."}`);
+      setDeclining(null);
       setLoading(true); setRefreshCount(value => value + 1);
-    } catch (failure) { setError(failure.message); }
-    finally { setBusyId(""); }
+      return true;
+    } catch (failure) {
+      const schedulingConflict = status === "confirmed" && failure.status === 409 && failure.code !== "SCHEDULING_ERROR";
+      if (schedulingConflict) setError(`Scheduling conflict: ${failure.message.replace(/^Scheduling conflict:\s*/i, "")} The request has not been declined. Contact the customer to discuss next steps; no different time has been offered or confirmed.`);
+      else if (!failure.status || failure.status >= 500) {
+        setDecisionUnknown(true);
+        setError("We could not verify whether the decision was saved. Refresh appointment status before trying another action. Do not repeat the decision until its saved status is known.");
+      } else {
+        setError(failure.message);
+        setDeclineFields(failure.fields || {});
+      }
+      return false;
+    } finally { actionBusy.current = false; setBusyId(""); }
   }
 
   return <section className="mechanic-workspace" aria-labelledby="staff-appointments-heading">
-    <div className="staff-section-heading"><div><p className="staff-kicker">KEEP THE DAY MOVING</p><h2 id="staff-appointments-heading">Appointment requests</h2><p>Review the request, then confirm or decline. Pending requests are not confirmed appointments.</p></div><span className="staff-badge staff-badge-neutral">Latest 100 requests</span></div>
+    <div className="staff-section-heading"><div><p className="staff-kicker">KEEP THE DAY MOVING</p><h2 id="staff-appointments-heading" tabIndex={-1}>Appointment requests</h2><p>Review the request, then confirm or decline. Pending requests are not confirmed appointments.</p></div><span className="staff-badge staff-badge-neutral">Latest 100 requests</span></div>
     {error && <p className="mechanic-message mechanic-error" role="alert">{error}</p>}
     {notice && <p className="mechanic-message mechanic-success" role="status">{notice}</p>}
     <div className="mechanic-toolbar"><label htmlFor="mechanic-status">Show appointments</label><select id="mechanic-status" value={filter} onChange={event => { setLoading(true); setError(""); setFilter(event.target.value); }}>
       <option value="pending">Pending</option><option value="confirmed">Confirmed</option><option value="declined">Declined</option><option value="all">All</option>
-    </select><button type="button" className="mechanic-refresh" onClick={() => { setLoading(true); setError(""); setRefreshCount(value => value + 1); }} disabled={loading}>Refresh</button><span className="mechanic-count" role="status">{loading ? "Loading requests…" : `${appointments.length} request(s) shown`}</span></div>
+    </select><button type="button" className="mechanic-refresh" onClick={refreshAppointments} disabled={loading || !!busyId}>Refresh</button><span className="mechanic-count" role="status">{loading ? "Loading requests…" : `${appointments.length} request(s) shown`}</span></div>
     <div className="mechanic-grid" aria-busy={loading}>
       {!loading && appointments.length === 0 && <p className="mechanic-empty">No {filter === "all" ? "" : `${filter} `}appointments found.</p>}
       {!loading && appointments.map(item => {
         const timezone = item.scheduling?.timezone || "America/Chicago";
+        // Format only an already validated U.S. number for a standard tel URI;
+        // keep the customer's original formatting in storage and on screen.
+        const phoneDigits = isValidUsPhone(item.phone) ? item.phone.replace(/\D/g, "") : "";
+        const dialNumber = phoneDigits ? `+${phoneDigits.length === 10 ? "1" : ""}${phoneDigits}` : "";
         return <article className="mechanic-card" key={item._id}>
           <div className="mechanic-card-top"><div><p className="staff-kicker">{item.service}</p><h3>{item.name}</h3></div><span className={`mechanic-status mechanic-status-${item.status}`}>{item.status}</span></div>
           <div className="staff-appointment-time"><Icon name="calendar" /><span>{formatBookingDate(item.date) || "Date needs review"} at {formatBookingTime(item.time) || "Time needs review"}<small>{timezone}</small></span></div>
-          <dl><dt>Service</dt><dd>{item.service}</dd><dt>Vehicle</dt><dd>{item.vehicle}</dd><dt>Email</dt><dd><a href={`mailto:${item.email}`}>{item.email}</a></dd><dt>Phone</dt><dd><a href={`tel:${item.phone}`}>{item.phone}</a></dd>{item.scheduling?.durationMinutes && <><dt>Estimate</dt><dd>{item.scheduling.durationMinutes} minutes · booked estimate</dd></>}{item.notes && <><dt>Notes</dt><dd>{item.notes}</dd></>}</dl>
+          <dl><dt>Service</dt><dd>{item.service}</dd><dt>Vehicle</dt><dd>{item.vehicle}</dd><dt>Email</dt><dd>{isValidEmailAddress(item.email) ? <a href={`mailto:${encodeURIComponent(item.email.trim())}`}>{item.email}</a> : <>{item.email}<span className="staff-field-help">Verify this address before contacting the customer.</span></>}</dd><dt>Phone</dt><dd>{dialNumber ? <a href={`tel:${dialNumber}`}>{item.phone}</a> : <>{item.phone}<span className="staff-field-help">Verify this number before calling.</span></>}</dd>{item.scheduling?.durationMinutes && <><dt>Estimate</dt><dd>{item.scheduling.durationMinutes} minutes · booked estimate</dd></>}{item.notes && <><dt>Notes</dt><dd>{item.notes}</dd></>}</dl>
           {item.status === "pending" && item.scheduling?.holdExpiresAt && <p className="staff-hold">Provisional hold expires {formatShopTimestamp(item.scheduling.holdExpiresAt, timezone)} ({timezone}). Approval always rechecks availability.</p>}
-          {item.status === "pending" && <div className="mechanic-actions"><button type="button" className="mechanic-approve" disabled={!!busyId} onClick={() => changeStatus(item._id, "confirmed")}>Confirm</button><button type="button" className="mechanic-decline" disabled={!!busyId} onClick={() => changeStatus(item._id, "declined")}>Decline</button></div>}
+          {item.status === "declined" && <section className="staff-decline-record" aria-label="Decline reason"><h4>Decline reason</h4>{item.decline?.explanation ? <><p><strong>{getDeclineReason(item.decline.category)?.label || "Recorded explanation"}</strong></p><p>{item.decline.explanation}</p>{item.decline.declinedAt && <p>Declined {formatShopTimestamp(item.decline.declinedAt, timezone)} ({timezone})</p>}</> : <p>No reason was recorded with this historical decision.</p>}</section>}
+          {item.status === "pending" && <><p className="staff-change-guidance">Need another date, parts to order, or more information? Contact the customer using the details above and keep this request pending while you discuss next steps. No replacement time is offered automatically.</p><div className="mechanic-actions"><button type="button" className="mechanic-approve" disabled={!!busyId || decisionUnknown} onClick={() => changeStatus(item._id, "confirmed")}>Confirm</button><button type="button" className="mechanic-decline" disabled={!!busyId || decisionUnknown} onClick={() => { setError(""); setDeclineFields({}); setDeclining(item); }}>Decline Appointment</button></div></>}
         </article>;
       })}
     </div>
+    {declining && <DeclineAppointmentDialog key={declining._id} appointment={declining} busy={!!busyId} locked={decisionUnknown} error={error} serverFields={declineFields} onCancel={() => { setDeclining(null); setDeclineFields({}); }} onConfirm={decline => changeStatus(declining._id, "declined", decline)} onRefresh={refreshAppointments} />}
     <p className="mechanic-notice">Appointment decisions are saved securely. Configured email notifications keep their existing delivery and retry behavior.</p>
   </section>;
 }

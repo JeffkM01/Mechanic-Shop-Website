@@ -62,7 +62,7 @@ export const test = base.extend({
         try { await operation; } finally { pendingRoutes.delete(operation); }
       });
       await provide({
-        Appointment, SchedulingState, scheduling, calls, faults,
+        Appointment, SchedulingState, scheduling, calls, faults, origin,
         advanceSession: milliseconds => { sessionClock += milliseconds; },
         async login() {
           await page.goto("/mechanic");

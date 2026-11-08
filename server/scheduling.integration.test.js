@@ -18,6 +18,7 @@ const initialTime = "2026-11-09T12:00:00.000Z";
 const appointmentDate = "2026-11-11";
 const password = "an-example-unique-password-999";
 const HOUR = 60 * 60 * 1000;
+const validDecline = { category: "unable_to_accommodate" };
 
 function request(overrides = {}) {
   return {
@@ -188,7 +189,7 @@ test("pending appointments reserve their complete duration and buffer; declining
   assert.ok(available.includes("09:30"));
   await assert.rejects(scheduling.createAppointment(request({ service: "Tire Rotation", time: "08:30" })), conflict);
   await assert.rejects(scheduling.createAppointment(request({ service: "Engine Air Filter Replacement", time: "09:00" })), conflict);
-  await scheduling.reviewAppointment(booked.id, "declined");
+  await scheduling.reviewAppointment(booked.id, "declined", { decline: validDecline });
   assert.equal((await Appointment.findById(booked.id)).status, "declined");
   assert.ok(times(await scheduling.getAvailability("Oil Change", appointmentDate)).includes("08:00"));
   assert.equal((await scheduling.createAppointment(request())).status, "pending");
@@ -240,7 +241,7 @@ test("expired pending holds retain requests and require fresh conflict checks be
   await assert.rejects(scheduling.reviewAppointment(original.id, "confirmed"), conflict);
   assert.equal((await Appointment.findById(original.id)).status, "pending");
   assert.equal((await Appointment.findById(replacement.id)).status, "pending");
-  await scheduling.reviewAppointment(replacement.id, "declined");
+  await scheduling.reviewAppointment(replacement.id, "declined", { decline: validDecline });
   assert.equal((await scheduling.reviewAppointment(original.id, "confirmed")).status, "confirmed");
 });
 
@@ -307,7 +308,7 @@ test("legacy requests with missing status and age metadata stay held and can be 
   assert.ok(!available.includes("08:00"));
   assert.ok(!available.includes("09:30"));
   assert.equal((await scheduling.reviewAppointment(approveId, "confirmed")).status, "confirmed");
-  assert.equal((await scheduling.reviewAppointment(declineId, "declined")).status, "declined");
+  assert.equal((await scheduling.reviewAppointment(declineId, "declined", { decline: validDecline })).status, "declined");
   assert.ok(times(await scheduling.getAvailability("Oil Change", appointmentDate)).includes("09:30"));
 });
 
@@ -492,7 +493,7 @@ test("every Repairs & Diagnostics service requires approval even with verified a
     assert.equal(appointment.status, "pending", `${name} must never be automatically confirmed`);
     await assert.rejects(scheduling.reviewAppointment(appointment.id, "confirmed", { automatic: true }),
       (error) => conflict(error) && error.code === "MANUAL_APPROVAL_REQUIRED");
-    await scheduling.reviewAppointment(appointment.id, "declined");
+    await scheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline });
   }
   assert.equal((await scheduling.createAppointment(request({ time: "13:00" }))).status, "confirmed",
     "verified basic maintenance remains eligible for explicitly enabled automatic booking");
@@ -1222,4 +1223,211 @@ test("settings, blocked periods, and appointment decisions retain mechanic authe
   assert.equal((await api(`${blockPath}/${id}`, { method: "DELETE", headers: cookieHeaders })).status, 403);
   assert.equal((await api(`${blockPath}/${id}`, { method: "DELETE", headers: authorizedHeaders })).status, 200);
   assert.equal((await api(decisionPath, { method: "PATCH", headers: authorizedHeaders, body: { status: "confirmed" } })).status, 200);
+});
+
+test("new declines require valid service-refusal details with authentication and CSRF", async (t) => {
+  const { api, scheduling, Appointment, SchedulingState, authorizedHeaders, cookieHeaders } = await httpFixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const path = `/api/mechanic/appointments/${appointment.id}`;
+  const before = await SchedulingState.findById("shop").lean();
+  const body = { status: "declined", decline: { category: "parts_unavailable" } };
+  assert.equal((await api(path, { method: "PATCH", body })).status, 401);
+  assert.equal((await api(path, { method: "PATCH", headers: cookieHeaders, body })).status, 403);
+  assert.equal((await api(path, { method: "PATCH", headers: { ...cookieHeaders, "X-Mechanic-CSRF": "wrong-token" }, body })).status, 403);
+  for (const decline of [undefined, null, {}, { category: "time_unavailable" }, { category: "other" }, { category: "other", explanation: "short" }, { category: "other", explanation: "x".repeat(1001) }, { category: "parts_unavailable", explanation: 1234 }, { category: "other", explanation: "Unacceptable\u0000control" }, { category: "other", explanation: "A complete valid explanation", source: "customer" }]) {
+    const rejected = await api(path, { method: "PATCH", headers: authorizedHeaders, body: { status: "declined", decline } });
+    assert.equal(rejected.status, 400, JSON.stringify(decline));
+    assert.equal(rejected.body.code, "INVALID_DECLINE_REASON");
+    assert.ok(Object.keys(rejected.body.fields).some(key => key.startsWith("decline.")));
+  }
+  assert.equal((await api(path, { method: "PATCH", headers: authorizedHeaders, body: { status: "confirmed", decline: body.decline } })).status, 400);
+  assert.equal((await api(path, { method: "PATCH", headers: authorizedHeaders, body: { ...body, source: "customer" } })).status, 400);
+  const unchanged = await Appointment.findById(appointment.id).lean();
+  assert.equal(unchanged.status, "pending");
+  assert.equal(unchanged.decline, undefined);
+  assert.equal(unchanged.notificationState.decisionCustomer, "not-applicable");
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), before);
+});
+
+test("a decline atomically stores its explanation, timestamp, source, and queue before releasing only its own reservation", async (t) => {
+  const { api, scheduling, Appointment, SchedulingState, authorizedHeaders } = await httpFixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const other = await scheduling.createAppointment(request({ time: "13:00" }));
+  const original = await Appointment.findById(appointment.id).lean();
+  const extra = "The required component is no longer available from our suppliers.";
+  const response = await api(`/api/mechanic/appointments/${appointment.id}`, {
+    method: "PATCH", headers: authorizedHeaders, body: { status: "declined", decline: { category: "parts_unavailable", explanation: extra } },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.status, "declined");
+  assert.equal(response.body.decline.category, "parts_unavailable");
+  assert.ok(response.body.decline.explanation.endsWith(extra));
+  assert.equal(response.body.decline.declinedAt, initialTime);
+  assert.equal(response.body.decline.source, "mechanic");
+  const stored = await Appointment.findById(appointment.id).lean();
+  assert.equal(stored.status, "declined");
+  assert.equal(stored.decline.explanation, response.body.decline.explanation);
+  assert.equal(stored.notificationState.decisionCustomer, "pending");
+  assert.deepEqual(stored.scheduling, original.scheduling);
+  for (const field of ["name", "email", "phone", "vehicle", "service", "date", "time", "notes"]) assert.equal(stored[field], original[field]);
+  assert.equal(await Appointment.countDocuments(), 2);
+  assert.equal((await Appointment.findById(other.id)).status, "pending");
+  const state = await SchedulingState.findById("shop").lean();
+  assert.deepEqual(state.reservations.map(item => String(item.appointmentId)), [other.id]);
+  const slots = times(await scheduling.getAvailability("Oil Change", appointmentDate));
+  assert.ok(slots.includes("08:00"));
+  assert.ok(!slots.includes("13:00"));
+  const staff = await api("/api/mechanic/appointments?status=declined", { headers: authorizedHeaders });
+  assert.equal(staff.body.appointments[0].decline.explanation, stored.decline.explanation);
+  const publicJson = JSON.stringify((await api(`/api/availability/calendar?service=Oil+Change&month=${appointmentDate.slice(0, 7)}`)).body);
+  assert.ok(!publicJson.includes(extra));
+});
+
+test("decline retries never overwrite a saved reason or requeue a sent decision and terminal requests cannot change status", async (t) => {
+  const { scheduling, otherScheduling, Appointment } = await fixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const first = await scheduling.reviewAppointment(appointment.id, "declined", { decline: { category: "other", explanation: "This repair requires equipment the shop does not have." } });
+  await Appointment.updateOne({ _id: appointment.id }, { $set: { "notificationState.decisionCustomer": "sent" } });
+  await assert.rejects(otherScheduling.reviewAppointment(appointment.id, "declined", { decline: { category: "parts_unavailable" } }), conflict);
+  await assert.rejects(otherScheduling.reviewAppointment(appointment.id, "confirmed"), conflict);
+  const unchanged = await Appointment.findById(appointment.id).lean();
+  assert.equal(unchanged.status, "declined");
+  assert.deepEqual(unchanged.decline, first.decline.toObject());
+  assert.equal(unchanged.notificationState.decisionCustomer, "sent");
+  const confirmed = await scheduling.createAppointment(request());
+  await scheduling.reviewAppointment(confirmed.id, "confirmed");
+  await assert.rejects(scheduling.reviewAppointment(confirmed.id, "declined", { decline: validDecline }), conflict);
+  assert.equal((await Appointment.findById(confirmed.id)).decline, undefined);
+});
+
+test("a failed terminal write saves neither status nor reason and does not release the held slot", async (t) => {
+  const { scheduling, Appointment, SchedulingState } = await fixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const before = await Appointment.findById(appointment.id).lean();
+  const state = await SchedulingState.findById("shop").lean();
+  const originalUpdate = Appointment.findOneAndUpdate;
+  const failure = new Error("Injected atomic decline write failure");
+  Appointment.findOneAndUpdate = async function () { throw failure; };
+  try {
+    await assert.rejects(scheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline }), error => error === failure);
+  } finally { Appointment.findOneAndUpdate = originalUpdate; }
+  assert.deepEqual(await Appointment.findById(appointment.id).lean(), before);
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), state);
+  assert.ok(!times(await scheduling.getAvailability("Oil Change", appointmentDate)).includes("08:00"));
+});
+
+test("reservation cleanup failure leaves the terminal decline and reason intact without reopening notifications", async (t) => {
+  const { scheduling, otherScheduling, Appointment, SchedulingState } = await fixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const other = await scheduling.createAppointment(request({ time: "13:00" }));
+  const updateState = SchedulingState.updateOne;
+  const failure = new Error("Injected reservation cleanup failure");
+  SchedulingState.updateOne = async function () { throw failure; };
+  try {
+    await assert.rejects(scheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline }), error => error === failure);
+  } finally { SchedulingState.updateOne = updateState; }
+  const stored = await Appointment.findById(appointment.id).lean();
+  assert.equal(stored.status, "declined");
+  assert.equal(stored.decline.category, validDecline.category);
+  assert.equal(stored.notificationState.decisionCustomer, "pending");
+  assert.equal((await Appointment.findById(other.id)).status, "pending");
+  await assert.rejects(otherScheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline }), conflict);
+  await assert.rejects(otherScheduling.reviewAppointment(appointment.id, "confirmed"), conflict);
+  const available = times(await otherScheduling.getAvailability("Oil Change", appointmentDate));
+  assert.ok(available.includes("08:00"), "reads reconcile the already-declined reservation safely");
+  assert.ok(!available.includes("13:00"), "someone else's hold remains occupied");
+  await otherScheduling.createAppointment(request());
+  assert.equal((await Appointment.findById(appointment.id)).status, "declined");
+  assert.equal(await Appointment.countDocuments(), 3);
+});
+
+test("competing declines persist exactly one complete reason and a delayed approval cannot resurrect a declined request", async (t) => {
+  const { scheduling, otherScheduling, Appointment } = await fixture(t);
+  const appointment = await scheduling.createAppointment(request());
+  const results = await Promise.allSettled([
+    scheduling.reviewAppointment(appointment.id, "declined", { decline: { category: "parts_unavailable" } }),
+    otherScheduling.reviewAppointment(appointment.id, "declined", { decline: { category: "service_not_offered" } }),
+  ]);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter(result => result.status === "rejected" && conflict(result.reason)).length, 1);
+  const saved = await Appointment.findById(appointment.id).lean();
+  const winner = results.find(result => result.status === "fulfilled").value;
+  assert.deepEqual(saved.decline, winner.decline.toObject());
+  assert.equal(saved.status, "declined");
+
+  const delayed = await scheduling.createAppointment(request());
+  const findAppointment = Appointment.findById;
+  let resume;
+  let readPending;
+  const pendingRead = new Promise(resolve => { readPending = resolve; });
+  const continueApproval = new Promise(resolve => { resume = resolve; });
+  Appointment.findById = function (...args) {
+    const query = findAppointment.apply(this, args);
+    const lean = query.lean.bind(query);
+    query.lean = async function (...options) {
+      const record = await lean(...options);
+      if (String(args[0]) === delayed.id) { readPending(); await continueApproval; }
+      return record;
+    };
+    return query;
+  };
+  const approving = scheduling.reviewAppointment(delayed.id, "confirmed");
+  try {
+    await pendingRead;
+    await otherScheduling.reviewAppointment(delayed.id, "declined", { decline: { category: "outside_capabilities" } });
+    resume();
+    await assert.rejects(approving, conflict);
+  } finally { resume(); Appointment.findById = findAppointment; }
+  const terminal = await Appointment.findById(delayed.id).lean();
+  assert.equal(terminal.status, "declined");
+  assert.equal(terminal.decline.category, "outside_capabilities");
+  assert.equal(terminal.notificationState.decisionCustomer, "pending");
+  assert.ok(times(await scheduling.getAvailability("Oil Change", appointmentDate)).includes("08:00"));
+});
+
+test("historical declined appointments remain readable without inventing a reason", async (t) => {
+  const { api, scheduling, Appointment, authorizedHeaders } = await httpFixture(t);
+  const old = await Appointment.create(request({ status: "declined", date: "2026-11-04" }));
+  const before = await Appointment.findById(old.id).lean();
+  assert.equal(before.decline, undefined);
+  const result = await api("/api/mechanic/appointments?status=declined", { headers: authorizedHeaders });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.appointments[0].decline, undefined);
+  assert.deepEqual(await Appointment.findById(old.id).lean(), before);
+  await assert.rejects(scheduling.reviewAppointment(old.id, "declined", { decline: validDecline }), conflict);
+  await assert.rejects(scheduling.reviewAppointment(old.id, "confirmed"), conflict);
+});
+
+test("decline suppression preserves sent receipts and mechanic notices without creating an alternate customer decision event", async (t) => {
+  const { scheduling, Appointment } = await fixture(t);
+  for (const receipt of ["pending", "sent", "suppressed", undefined]) {
+    const appointment = await scheduling.createAppointment(request());
+    await Appointment.updateOne({ _id: appointment.id }, receipt === undefined
+      ? { $unset: { "notificationState.requestCustomer": 1 } }
+      : { $set: { "notificationState.requestCustomer": receipt } });
+    await scheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline });
+    const stored = await Appointment.findById(appointment.id).lean();
+    assert.equal(stored.notificationState.requestCustomer, receipt === "pending" ? "suppressed" : receipt);
+    assert.equal(stored.notificationState.requestMechanic, "pending");
+    assert.equal(stored.notificationState.decisionCustomer, "pending");
+    assert.equal(stored.status, "declined");
+    assert.ok(stored.decline.explanation.length >= 10);
+  }
+});
+
+test("public booking rejects malformed phone input with field-specific errors before creating any reservation", async (t) => {
+  const { api, scheduling, Appointment, SchedulingState } = await httpFixture(t);
+  await scheduling.getSettings();
+  const original = await SchedulingState.findById("shop").lean();
+  for (const phone of ["636-55A-1234", "636ABC5551234", "123ABC4567", "636-555-123", "636555123456", "636/555/1234", "636+15551234"]) {
+    const result = await api("/api/appointments", { method: "POST", body: request({ phone }) });
+    assert.equal(result.status, 400, phone);
+    assert.match(result.body.fields.phone, /phone|letters|U\.S\./i);
+    assert.equal(result.body.value, undefined, "an invalid response contains corrections, not prepared booking data");
+  }
+  const multiple = await api("/api/appointments", { method: "POST", body: request({ name: "", email: "not-email", phone: "ABC", vehicle: "" }) });
+  assert.equal(multiple.status, 400);
+  for (const field of ["name", "email", "phone", "vehicle"]) assert.equal(typeof multiple.body.fields[field], "string");
+  assert.equal(await Appointment.countDocuments(), 0);
+  assert.deepEqual(await SchedulingState.findById("shop").lean(), original);
 });
