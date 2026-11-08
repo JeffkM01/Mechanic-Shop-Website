@@ -31,8 +31,8 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
   app.post("/api/appointments", async (req, res, next) => {
     // Date/time syntax is checked here; the shop's persisted timezone, hours,
     // notice and capacity rules are applied atomically by scheduling below.
-    const { error, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true });
-    if (error) return res.status(400).json({ error });
+    const { error, fields, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true });
+    if (error) return res.status(400).json({ error, ...(fields ? { fields } : {}) });
     try {
       const appointment = await scheduling.createAppointment(value);
       res.status(201).json({
@@ -57,16 +57,21 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
     if (!["all", "pending", "confirmed", "declined"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
     try {
       const appointments = await Appointment.find(status === "all" ? {} : status === "pending" ? { status: { $in: ["pending", null] } } : { status })
-        .select("name email phone vehicle service date time notes status createdAt updatedAt scheduling")
+        .select("name email phone vehicle service date time notes status decline createdAt updatedAt scheduling")
         .sort({ createdAt: -1 }).limit(100).lean();
       res.json({ appointments: appointments.map(appointment => ({ ...appointment, status: appointment.status || "pending" })) });
     } catch (error) { next(error); }
   });
 
   app.patch("/api/mechanic/appointments/:id", auth.requireAuth, auth.requireCsrf, async (req, res, next) => {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body).some(key => !["status", "decline"].includes(key))
+      || (req.body.status !== "declined" && Object.hasOwn(req.body, "decline"))) {
+      return res.status(400).json({ error: "Provide a review status and decline details only when declining." });
+    }
     try {
-      const appointment = await scheduling.reviewAppointment(req.params.id, req.body?.status);
-      res.json({ id: appointment.id, status: appointment.status, emailNotification: notifications.enabled ? "queued" : "disabled" });
+      const appointment = await scheduling.reviewAppointment(req.params.id, req.body.status, { decline: req.body.decline });
+      res.json({ id: appointment.id, status: appointment.status, ...(appointment.decline ? { decline: appointment.decline } : {}), emailNotification: notifications.enabled ? "queued" : "disabled" });
       notifications.kick();
     } catch (error) { next(error); }
   });
@@ -90,7 +95,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
   });
 
   app.use((error, _req, res, _next) => {
-    if (error instanceof SchedulingError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof SchedulingError) return res.status(error.status).json({ error: error.message, code: error.code, ...(error.fields ? { fields: error.fields } : {}) });
     if (error instanceof SyntaxError && error.status === 400 && "body" in error) return res.status(400).json({ error: "Invalid JSON request." });
     if (error.type === "entity.too.large") return res.status(413).json({ error: "Request is too large." });
     console.error("Appointment API request failed:", error);

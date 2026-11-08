@@ -68,6 +68,8 @@ Normal submissions **remain pending** under the seeded defaults. Automation requ
 
 Enabling the flag alone cannot confirm using placeholder hours/capacity. Editing saved hours/timezone/breaks or capacity invalidates the corresponding verification unless the same authenticated edit explicitly re-verifies it. Provisional tire/cabin-filter/wiper services cannot be automatically confirmed even when settings are verified. Every Repairs & Diagnostics service (Brake Repairs, AC & Heating Repair, Engine Diagnostics, and Other / Not Sure) always requires approval. This list is derived from the shared catalog category, so new repair-category entries cannot accidentally become automatic. When the automatic limit is reached, an otherwise valid request remains pending with a provisional hold. Email receipts reflect actual automatic confirmation when it happens; pending receipts never imply approval. No live settings were enabled during development.
 
+See [Readability, booking validation, and decline communication](accessibility-validation.md) for the Prompt 5 typography audit, strict phone/field-validation policy, reviewed decline reasons, customer email formatting, and manual user-testing checklist.
+
 ## Customer notification policy
 
 `decisionCustomer` is the **only customer-confirmation queue for automatic bookings**. Automatic approval atomically changes a still-pending `requestCustomer` receipt to `suppressed` while setting confirmed status and queuing `decisionCustomer`. If the initial pending receipt was already sent, its `sent` state is preserved and only the decision confirmation is queued. A receipt already in flight may finish with its pending message; it is followed by one logical confirmation rather than two different confirmation messages.

@@ -14,6 +14,7 @@ async function api(path, { method = "GET", body, csrfToken } = {}) {
     const error = new Error(data.error || `Request failed (${response.status}).`);
     error.status = response.status;
     error.code = data.code;
+    error.fields = data.fields;
     throw error;
   }
   return data;

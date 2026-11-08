@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { localDateString, validateAppointment } from "./appointmentValidation.js";
+import {
+  fieldLimits, isValidEmailAddress, isValidUsPhone, localDateString, validateAppointment,
+  validateAppointmentFields, validateUsPhone,
+} from "./appointmentValidation.js";
 
 const now = new Date(2026, 10, 3, 9, 0); // Tuesday, November 3, 2026 at 9am
 const request = {
@@ -81,4 +84,100 @@ test("scheduling-authoritative validation leaves shop calendar decisions to the 
   assert.equal(validateAppointment({ ...request, date: "2026-11-02" }, now, { schedulingAuthoritative: true }), null);
   assert.match(validateAppointment({ ...request, date: "2026-02-30" }, now, { schedulingAuthoritative: true }), /valid date/);
   assert.match(validateAppointment({ ...request, time: "25:00" }, now, { schedulingAuthoritative: true }), /valid time/);
+});
+
+test("accepts common U.S. phone formats and an optional leading U.S. country code", () => {
+  for (const phone of [
+    "6365551234", "636-555-1234", "(636) 555-1234", "636 555 1234", "+1 636-555-1234",
+    "+16365551234", "16365551234", "1-636-555-1234", "+1 (636) 555-1234", "(636)5551234",
+    " 636-555-1234 ",
+  ]) {
+    assert.equal(isValidUsPhone(phone), true, phone);
+    assert.equal(validateUsPhone(phone), null, phone);
+    assert.deepEqual(validateAppointmentFields({ ...request, phone }, now), {}, phone);
+  }
+});
+
+test("rejects letters even when removing them would leave exactly ten phone digits", () => {
+  for (const phone of ["636-55A-1234", "636ABC5551234", "123ABC4567", "636A5551234", "636-555-1234 ext9"]) {
+    assert.equal(isValidUsPhone(phone), false, phone);
+    assert.match(validateUsPhone(phone), /Letters are not allowed/, phone);
+    assert.match(validateAppointmentFields({ ...request, phone }, now).phone, /Letters are not allowed/, phone);
+  }
+});
+
+test("rejects unsupported punctuation, lengths, parentheses, and misplaced country prefixes", () => {
+  for (const phone of [
+    "636-555-123", "63655512345", "26365551234", "+44 6365551234", "+11 6365551234",
+    "636+15551234", "6365551234+1", "++16365551234", "636.555.1234", "636/555/1234",
+    "(6365551234", "636)5551234", "636-(555)-1234", "636--555-1234", "636_555_1234",
+    "636\t5551234", "636\n5551234", "6365551234\n", "6365551234#", "", null, 6365551234, {},
+  ]) {
+    assert.equal(isValidUsPhone(phone), false, String(phone));
+    assert.ok(validateAppointmentFields({ ...request, phone }, now).phone, String(phone));
+  }
+});
+
+test("returns all relevant field errors in order and preserves the original customer entries", () => {
+  const form = { ...request, name: " ", email: "not-an-email", phone: "636ABC5551234", vehicle: "", notes: "Keep this note" };
+  const before = structuredClone(form);
+  const errors = validateAppointmentFields(form, now);
+  assert.deepEqual(Object.keys(errors), ["name", "email", "phone", "vehicle"]);
+  assert.equal(errors.name, "Please enter your full name.");
+  assert.equal(errors.email, "Please enter a valid email address.");
+  assert.match(errors.phone, /Letters are not allowed/);
+  assert.match(errors.vehicle, /year, make, and model/);
+  assert.equal(validateAppointment(form, now), errors.name);
+  assert.deepEqual(form, before);
+  assert.deepEqual(validateAppointmentFields({ ...form, name: request.name, email: request.email, phone: request.phone, vehicle: request.vehicle }, now), {});
+});
+
+test("reports missing selections, non-text fields, and optional-note limits without throwing", () => {
+  assert.deepEqual(Object.keys(validateAppointmentFields({}, now)), ["name", "email", "phone", "vehicle", "service", "date", "time"]);
+  assert.deepEqual(Object.keys(validateAppointmentFields(null, now)), ["name", "email", "phone", "vehicle", "service", "date", "time"]);
+  assert.match(validateAppointmentFields({ ...request, notes: {} }, now).notes, /notes as text/);
+  for (const field of ["name", "email", "phone", "vehicle"]) {
+    assert.ok(validateAppointmentFields({ ...request, [field]: {} }, now)[field]);
+  }
+  assert.deepEqual(validateAppointmentFields({ ...request, notes: "n".repeat(fieldLimits.notes) }, now), {});
+  assert.match(validateAppointmentFields({ ...request, notes: "n".repeat(fieldLimits.notes + 1) }, now).notes, /1000/);
+  assert.deepEqual(validateAppointmentFields({ ...request, notes: undefined }, now), {});
+});
+
+test("validates exact text boundaries and strict leap dates in scheduling-authoritative mode", () => {
+  for (const field of ["name", "vehicle"]) {
+    assert.equal(validateAppointmentFields({ ...request, [field]: "a".repeat(fieldLimits[field]) }, now)[field], undefined);
+    assert.match(validateAppointmentFields({ ...request, [field]: "a".repeat(fieldLimits[field] + 1) }, now)[field], new RegExp(String(fieldLimits[field])));
+  }
+  assert.deepEqual(validateAppointmentFields({ ...request, date: "2028-02-29" }, now, { schedulingAuthoritative: true }), {});
+  for (const date of ["2027-02-29", "2028-04-31", "0000-01-01", "11/04/2026"]) {
+    assert.ok(validateAppointmentFields({ ...request, date }, now, { schedulingAuthoritative: true }).date, date);
+  }
+});
+
+test("accepts a single conventional bare email address including plus addressing", () => {
+  for (const email of [
+    "customer@example.invalid", "customer+oil@example.com", "First.Last+car@auto-shop.example.com",
+    "o'brien@example.com", "a".repeat(64) + "@example.com", " customer@example.com ",
+    "customer@xn--bcher-kva.example",
+  ]) {
+    assert.equal(isValidEmailAddress(email), true, email);
+    assert.equal(validateAppointmentFields({ ...request, email }, now).email, undefined, email);
+  }
+});
+
+test("rejects email display names, recipient lists, controls, and invalid domain or dot syntax", () => {
+  for (const email of [
+    "name<person@example.com>", "first,last@example.com", "person@example.com,second", "person@example.com;second",
+    ".person@example.com", "person.@example.com", "per..son@example.com", "person@foo..com",
+    "person@-example.com", "person@example-.com", "person@bad_domain.example", "person@" + "a".repeat(64) + ".com",
+    '"person"@example.com', '"first,last"@example.com', "üser@example.com", "person@例え.テスト",
+    "person@[127.0.0.1]", "person@example.com\n", "\tperson@example.com", "person@example.com\r\nBcc: another@example.com",
+    "a".repeat(65) + "@example.com", "person@@example.com", "person@example", "person@.example.com",
+  ]) {
+    assert.equal(isValidEmailAddress(email), false, email);
+    assert.equal(validateAppointmentFields({ ...request, email }, now).email, "Please enter a valid email address.", email);
+  }
+  assert.equal(isValidEmailAddress(`a@${[63, 63, 63, 60].map(length => "x".repeat(length)).join(".")}`), true);
+  assert.equal(isValidEmailAddress(`a@${[63, 63, 63, 61].map(length => "x".repeat(length)).join(".")}`), false);
 });

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { randomUUID } from "node:crypto";
 import { SERVICES, getService } from "../shared/services.js";
+import { validateDeclineReason } from "../shared/declineReasons.js";
 import { defaultSettings, mergeSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
 
 const idOf = (value) => String(value);
@@ -278,11 +279,30 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return appointment;
   }
 
-  async function reviewAppointment(id, status, { automatic = false } = {}) {
+  async function reviewAppointment(id, status, { automatic = false, decline } = {}) {
     if (!/^[a-f\d]{24}$/i.test(id)) throw new SchedulingError(400, "Invalid appointment ID.");
     if (!["confirmed", "declined"].includes(status)) throw new SchedulingError(400, "Choose confirmed or declined.");
     if (status === "declined") {
-      const declined = await Appointment.findOneAndUpdate({ _id: id, $or: [{ status: "pending" }, { status: null }] }, { $set: { status, "notificationState.decisionCustomer": "pending" } }, { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } });
+      const prepared = validateDeclineReason(decline);
+      if (prepared.error) {
+        const failure = new SchedulingError(400, prepared.error, "INVALID_DECLINE_REASON");
+        failure.fields = prepared.fields;
+        throw failure;
+      }
+      const pending = { _id: id, $or: [{ status: "pending" }, { status: null }] };
+      const change = {
+        status,
+        decline: { ...prepared.value, declinedAt: new Date(now()), source: "mechanic" },
+        "notificationState.decisionCustomer": "pending",
+      };
+      const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } };
+      // A queued pending receipt would contradict this terminal decision. The
+      // conditional branches suppress only an unsent receipt and preserve one
+      // already sent, even if the dispatcher changes that flag concurrently.
+      let declined = await Appointment.findOneAndUpdate({ ...pending, "notificationState.requestCustomer": "pending" }, {
+        $set: { ...change, "notificationState.requestCustomer": "suppressed" },
+      }, options);
+      if (!declined) declined = await Appointment.findOneAndUpdate({ ...pending, "notificationState.requestCustomer": { $ne: "pending" } }, { $set: change }, options);
       if (!declined) throw new SchedulingError(409, "This request was already reviewed or no longer exists.");
       // Terminal appointment status is persisted before releasing capacity.
       // Reads also reconcile declined reservations if this cleanup is interrupted.
@@ -294,7 +314,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     const confirmed = await commit((state, clock, current) => {
       const definition = getService(appointment.service);
       if (automatic && (!definition || !automaticEligible(state.settings, definition))) throw new SchedulingError(409, "This request requires mechanic approval.", "MANUAL_APPROVAL_REQUIRED");
-      if ((appointment.scheduling?.timezone || "America/Chicago") !== state.settings.timezone) throw new SchedulingError(409, "The shop timezone has changed. Please decline this request and request a new time in the current shop timezone.", "TIMEZONE_CHANGED");
+      if ((appointment.scheduling?.timezone || "America/Chicago") !== state.settings.timezone) throw new SchedulingError(409, "Scheduling conflict: the shop timezone has changed. This request remains pending. Contact the customer to review the appointment time; no replacement time has been offered.", "TIMEZONE_CHANGED");
       // Resolve original snapshots even after their provisional hold expired.
       // This retains partial legacy end/buffer bounds instead of shrinking them
       // to a subsequently edited service estimate or buffer configuration.

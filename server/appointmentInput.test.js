@@ -85,3 +85,59 @@ test("optional notes default to empty", () => {
   const result = prepareAppointment(withoutNotes, now);
   assert.equal(result.value.notes, "");
 });
+
+test("server input accepts supported U.S. phone formats without rewriting the stored number", () => {
+  for (const phone of ["6365551234", "636-555-1234", "(636) 555-1234", "636 555 1234", "+1 636-555-1234", "16365551234"]) {
+    const result = prepareAppointment({ ...good, phone: ` ${phone} ` }, now);
+    assert.equal(result.error, undefined, phone);
+    assert.equal(result.value.phone, phone, phone);
+  }
+});
+
+test("server rejects malformed phone input even if removing characters would leave valid digits", () => {
+  for (const phone of ["636ABC5551234", "636A5551234", "636-55A-1234", "636-555-123", "63655512345", "+44 6365551234", "636.555.1234", "6365551234\n", "6365551234+1"]) {
+    const result = prepareAppointment({ ...good, phone }, now, { schedulingAuthoritative: true });
+    assert.ok(result.fields.phone, phone);
+    assert.equal(result.error, result.fields.phone, phone);
+    assert.equal(result.value, undefined, phone);
+  }
+});
+
+test("server provides all field corrections without returning or mutating customer data", () => {
+  const body = { ...good, name: "", email: "bad", phone: "636ABC5551234", vehicle: "", notes: "Please keep my note" };
+  const before = structuredClone(body);
+  const result = prepareAppointment(body, now, { schedulingAuthoritative: true });
+  assert.deepEqual(Object.keys(result.fields), ["name", "email", "phone", "vehicle"]);
+  assert.match(result.fields.phone, /Letters are not allowed/);
+  assert.equal(result.value, undefined);
+  assert.equal(JSON.stringify(result).includes(body.notes), false);
+  assert.deepEqual(body, before);
+});
+
+test("server keeps unknown decision, scheduling, and status fields outside prepared customer data", () => {
+  const result = prepareAppointment({ ...good, status: "declined", decline: { category: "other", explanation: "Forged decision" }, scheduling: { durationMinutes: 1 }, notificationState: { decisionCustomer: "sent" } }, now);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(Object.keys(result.value), ["name", "email", "phone", "vehicle", "service", "date", "time", "notes"]);
+});
+
+test("server accepts one bare plus-addressed mailbox and preserves its entered text", () => {
+  const email = "Customer+oil@auto-shop.example.invalid";
+  const body = { ...good, email: ` ${email} ` };
+  const before = structuredClone(body);
+  const result = prepareAppointment(body, now);
+  assert.equal(result.error, undefined);
+  assert.equal(result.value.email, email);
+  assert.deepEqual(body, before);
+});
+
+test("server rejects recipient-list or display-name syntax and malformed email even without browser validation", () => {
+  for (const email of [
+    "name<person@example.com>", "first,last@example.com", "person@example.com,second", "person@example.com;second",
+    "person..name@example.com", ".person@example.com", "person@example-.com", "person@bad_domain.example",
+    '"person"@example.com', "person@例え.テスト", "person@example.com\n", "person@example.com\r\nBcc: victim@example.com",
+  ]) {
+    const result = prepareAppointment({ ...good, email }, now, { schedulingAuthoritative: true });
+    assert.equal(result.fields.email, "Please enter a valid email address.", email);
+    assert.equal(result.value, undefined, email);
+  }
+});

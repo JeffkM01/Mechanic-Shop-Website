@@ -378,11 +378,17 @@ test("requires explicit time selection and validated customer fields before revi
   await dateButton(page, "2030-01-30").click();
   await expect(page.getByRole("radio", { name: "8:00 AM", exact: true })).toBeVisible();
   const review = page.getByRole("button", { name: "Review Appointment Request", exact: true });
-  await expect(review).toBeDisabled();
+  await expect(review).toBeEnabled();
+  await review.click();
+  await expect(page.locator("#booking-time-error")).toContainText(/select.*available appointment time/i);
+  await expect(page.getByRole("region", { name: "Review your appointment request." })).toHaveCount(0);
+  expect(state.posts).toHaveLength(0);
   await selectTime(page);
   await fillCustomer(page);
   await page.locator('[name="email"]').fill("not-an-email");
   await review.click();
+  await expect(page.locator("#booking-email-error")).toContainText("Please enter a valid email address.");
+  await expect(page.locator('[name="email"]')).toBeFocused();
   await expect(page.getByRole("region", { name: "Review your appointment request." })).toHaveCount(0);
   expect(state.posts).toHaveLength(0);
   await page.locator('[name="email"]').fill(CUSTOMER.email);
