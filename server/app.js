@@ -1,10 +1,17 @@
 import express from "express";
 import { prepareAppointment } from "./appointmentInput.js";
 import { SchedulingError } from "./schedulingRules.js";
+import { createCustomerRoutes } from "./customerRoutes.js";
 
-export function createApp({ Appointment, scheduling, auth, notifications, databaseReady = () => Appointment.db.readyState === 1 }) {
+export function createApp({ Appointment, scheduling, auth, notifications, management = null, databaseReady = () => Appointment.db.readyState === 1 }) {
   const app = express();
   app.disable("x-powered-by");
+  // Include parser failures and oversized requests in the sensitive-route
+  // policy, before request bodies reach express.json or any route handler.
+  app.use("/api/customer/appointments", (_req, res, next) => {
+    res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
+    next();
+  });
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/api/health", (_req, res) => {
@@ -39,12 +46,18 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
         id: appointment.id,
         status: appointment.status,
         emailNotification: notifications.enabled ? "queued" : "disabled",
+        managementAccess: Boolean(management?.enabled && notifications.enabled),
         holdExpiresAt: appointment.status === "pending" ? appointment.scheduling?.holdExpiresAt : undefined,
         message: appointment.status === "confirmed" ? "Your appointment has been confirmed." : "Request saved for mechanic review. The provisional hold expires if it is not reviewed in time; approval is still required.",
       });
       notifications.kick();
     } catch (error) { next(error); }
   });
+
+  // Customer credentials are scoped to one appointment. These routes never use
+  // a reference ID as authorization or return the staff appointment payload.
+  if (management) app.use("/api/customer/appointments", createCustomerRoutes({ management, scheduling, notifications }));
+  else app.use("/api/customer/appointments", (_req, res) => res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }).status(503).json({ error: "Online appointment management is unavailable. Please contact the shop." }));
 
   app.use("/api/mechanic", (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
   app.post("/api/mechanic/login", auth.login);
@@ -54,12 +67,30 @@ export function createApp({ Appointment, scheduling, auth, notifications, databa
 
   app.get("/api/mechanic/appointments", auth.requireAuth, async (req, res, next) => {
     const status = req.query.status || "pending";
-    if (!["all", "pending", "confirmed", "declined"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
+    if (!["all", "pending", "confirmed", "declined", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
     try {
       const appointments = await Appointment.find(status === "all" ? {} : status === "pending" ? { status: { $in: ["pending", null] } } : { status })
-        .select("name email phone vehicle service date time notes status decline createdAt updatedAt scheduling")
+        .select("name email phone vehicle service date time notes status decline cancellation createdAt updatedAt scheduling")
         .sort({ createdAt: -1 }).limit(100).lean();
-      res.json({ appointments: appointments.map(appointment => ({ ...appointment, status: appointment.status || "pending" })) });
+      res.json({ appointments: appointments.map(appointment => ({ ...appointment, status: appointment.status || "pending", cancellationEligibility: scheduling.getCancellationEligibility?.(appointment) || { canCancel: false } })) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/mechanic/appointments/:id/cancel", auth.requireAuth, auth.requireCsrf, async (req, res, next) => {
+    try {
+      const appointment = await scheduling.cancelAppointment(req.params.id, "mechanic", req.body);
+      const emailNotification = !notifications.enabled ? "disabled" : appointment.notificationState?.cancellationCustomer === "sent" ? "sent" : appointment.notificationState?.cancellationCustomer === "pending" ? "queued" : "not-applicable";
+      res.json({ id: appointment.id, status: appointment.status, cancellation: appointment.cancellation, emailNotification });
+      notifications.kick();
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/mechanic/appointments/:id/management/revoke", auth.requireAuth, auth.requireCsrf, async (req, res, next) => {
+    try {
+      if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid appointment ID.", code: "INVALID_APPOINTMENT_ID" });
+      if (!management) return res.status(503).json({ error: "Online appointment management is unavailable." });
+      await management.revoke(req.params.id);
+      res.json({ revoked: true });
     } catch (error) { next(error); }
   });
 

@@ -229,6 +229,9 @@ body.staff-session-checking .mechanic-page { visibility: hidden; }
 
 .decline-dialog { width: min(680px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); overflow: auto; overscroll-behavior: contain; margin: auto; padding: 28px; border: 1px solid #b4c0c7; border-top: 4px solid var(--orange); border-radius: 8px; background: #fff; color: var(--ink); box-shadow: 0 20px 70px #101f2c40; font-size: var(--text-base); line-height: 1.7; }
 .decline-dialog::backdrop { background: #101f2cb8; }
+.mechanic-status-cancelled { background: #e7ecef; color: #344b5c; }
+.staff-cancellation-record { padding: 18px; margin-top: 20px; border: 1px solid #c0cdd4; border-left: 3px solid #586f7e; border-radius: 4px; background: #f1f5f6; color: #344b5c; font-size: var(--text-notice); line-height: 1.7; overflow-wrap: anywhere; }
+.staff-cancellation-record p { font-size: var(--text-notice); white-space: pre-wrap; }
 .decline-dialog h2 { font-size: 1.75rem; margin-bottom: 18px; }
 .decline-dialog h3 { font-size: 1.25rem; margin-bottom: 12px; }
 .decline-dialog p { max-width: 65ch; }

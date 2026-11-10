@@ -359,7 +359,7 @@ export function calculateSlots(settings, serviceName, date, occupancies, nowDate
 // must acquire a fresh reservation. Missing age metadata stays occupied until a
 // mechanic reviews it; confirmed appointments never expire automatically.
 export function legacyOccurrence(appointment, settings, nowDate) {
-  if (appointment.status === "declined") return null;
+  if (["declined", "cancelled"].includes(appointment.status)) return null;
   const now = instant(nowDate, "Current time");
   const scheduling = appointment.scheduling ?? {};
   if (appointment.status === "pending" || !appointment.status) {

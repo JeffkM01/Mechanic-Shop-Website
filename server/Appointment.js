@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import { DECLINE_REASONS, DECLINE_EXPLANATION_MIN, DECLINE_MESSAGE_MAX } from "../shared/declineReasons.js";
+import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS, CANCELLATION_MESSAGE_MAX, CANCELLATION_EXPLANATION_MAX } from "../shared/cancellations.js";
+import { managementSchema } from "./customerManagementSchema.js";
 
 export const appointmentSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
@@ -10,7 +12,21 @@ export const appointmentSchema = new mongoose.Schema({
   date: { type: String, required: true }, // YYYY-MM-DD, shop-local date
   time: { type: String, required: true }, // HH:MM, shop-local time
   notes: { type: String, default: "", maxlength: 1000 },
-  status: { type: String, enum: ["pending", "confirmed", "declined"], default: "pending" },
+  status: { type: String, enum: ["pending", "confirmed", "declined", "cancelled"], default: "pending" },
+  management: { type: managementSchema, select: false, default: undefined },
+  cancellation: {
+    type: new mongoose.Schema({
+      by: { type: String, enum: ["customer", "mechanic"], required: true },
+      category: { type: String, enum: [...CUSTOMER_CANCELLATION_REASONS, ...MECHANIC_CANCELLATION_REASONS].map(reason => reason.id), required: true },
+      message: { type: String, maxlength: CANCELLATION_MESSAGE_MAX },
+      explanation: { type: String, maxlength: CANCELLATION_EXPLANATION_MAX },
+      cancelledAt: { type: Date, required: true },
+      originalDate: { type: String, required: true, maxlength: 10 },
+      originalTime: { type: String, required: true, maxlength: 5 },
+      timezone: { type: String, required: true, maxlength: 100 },
+    }, { _id: false }),
+    default: undefined,
+  },
   // Legacy declined records intentionally have no invented reason. New staff
   // declines persist this snapshot with terminal status and the queue flag.
   decline: {
@@ -43,7 +59,9 @@ export const appointmentSchema = new mongoose.Schema({
   notificationState: {
     requestCustomer: { type: String, enum: ["pending", "sent", "suppressed"], default: "pending" },
     requestMechanic: { type: String, enum: ["pending", "sent"], default: "pending" },
-    decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
+    decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent", "suppressed"], default: "not-applicable" },
+    cancellationCustomer: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
+    cancellationMechanic: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
   },
 }, { timestamps: true });
 

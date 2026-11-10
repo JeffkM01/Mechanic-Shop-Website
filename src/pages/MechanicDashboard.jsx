@@ -4,7 +4,9 @@ import BusinessHoursSettings from "../components/BusinessHoursSettings";
 import BookingSettings from "../components/BookingSettings";
 import ClosuresAndBlocks from "../components/ClosuresAndBlocks";
 import DeclineAppointmentDialog from "../components/DeclineAppointmentDialog";
+import CancelAppointmentDialog from "../components/CancelAppointmentDialog";
 import { getDeclineReason } from "../../shared/declineReasons.js";
+import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS } from "../../shared/cancellations.js";
 import useMechanicSession from "../hooks/useMechanicSession";
 import useSchedulingSettings from "../hooks/useSchedulingSettings";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
@@ -23,6 +25,8 @@ function Appointments({ request }) {
   const [notice, setNotice] = useState("");
   const [declining, setDeclining] = useState(null);
   const [declineFields, setDeclineFields] = useState({});
+  const [cancelling, setCancelling] = useState(null);
+  const [cancellationFields, setCancellationFields] = useState({});
   const [decisionUnknown, setDecisionUnknown] = useState(false);
   const actionBusy = useRef(false);
 
@@ -34,6 +38,7 @@ function Appointments({ request }) {
         const items = data.appointments || [];
         setAppointments(items); setDecisionUnknown(false);
         setDeclining(current => current && items.some(item => item._id === current._id && item.status === "pending") ? current : null);
+        setCancelling(current => current ? items.find(item => item._id === current._id && item.cancellationEligibility?.canCancel) || null : null);
       })
       .catch(failure => { if (active) setError(failure.message); })
       .finally(() => { if (active) setLoading(false); });
@@ -41,7 +46,27 @@ function Appointments({ request }) {
   }, [filter, refreshCount, request]);
 
   function refreshAppointments() {
-    setLoading(true); setError(""); setDeclineFields({}); setRefreshCount(value => value + 1);
+    setLoading(true); setError(""); setDeclineFields({}); setCancellationFields({}); setRefreshCount(value => value + 1);
+  }
+
+  async function cancelAppointment(id, reason) {
+    if (actionBusy.current || decisionUnknown) return false;
+    actionBusy.current = true;
+    setBusyId(id); setError(""); setNotice(""); setCancellationFields({});
+    try {
+      const result = await request(`/appointments/${id}/cancel`, { method: "POST", body: reason });
+      if (result.status !== "cancelled") throw new Error("Cancellation status could not be verified.");
+      const delivery = result.emailNotification === "queued" ? "A customer email has been queued for delivery." : result.emailNotification === "sent" ? "The cancellation email has already been sent." : "No customer email is queued. Contact the customer directly.";
+      setNotice(`Appointment cancelled. ${delivery}`);
+      setCancelling(null); setLoading(true); setRefreshCount(value => value + 1);
+      return true;
+    } catch (failure) {
+      if (!failure.status || failure.status >= 500 || failure.status === 409) {
+        setDecisionUnknown(true);
+        setError("We could not verify the current cancellation status. Refresh appointment status before trying another action. The appointment may already have changed.");
+      } else { setError(failure.message); setCancellationFields(failure.fields || {}); }
+      return false;
+    } finally { actionBusy.current = false; setBusyId(""); }
   }
 
   async function changeStatus(id, status, decline) {
@@ -73,7 +98,7 @@ function Appointments({ request }) {
     {error && <p className="mechanic-message mechanic-error" role="alert">{error}</p>}
     {notice && <p className="mechanic-message mechanic-success" role="status">{notice}</p>}
     <div className="mechanic-toolbar"><label htmlFor="mechanic-status">Show appointments</label><select id="mechanic-status" value={filter} onChange={event => { setLoading(true); setError(""); setFilter(event.target.value); }}>
-      <option value="pending">Pending</option><option value="confirmed">Confirmed</option><option value="declined">Declined</option><option value="all">All</option>
+      <option value="pending">Pending</option><option value="confirmed">Confirmed</option><option value="declined">Declined</option><option value="cancelled">Cancelled</option><option value="all">All</option>
     </select><button type="button" className="mechanic-refresh" onClick={refreshAppointments} disabled={loading || !!busyId}>Refresh</button><span className="mechanic-count" role="status">{loading ? "Loading requests…" : `${appointments.length} request(s) shown`}</span></div>
     <div className="mechanic-grid" aria-busy={loading}>
       {!loading && appointments.length === 0 && <p className="mechanic-empty">No {filter === "all" ? "" : `${filter} `}appointments found.</p>}
@@ -89,11 +114,14 @@ function Appointments({ request }) {
           <dl><dt>Service</dt><dd>{item.service}</dd><dt>Vehicle</dt><dd>{item.vehicle}</dd><dt>Email</dt><dd>{isValidEmailAddress(item.email) ? <a href={`mailto:${encodeURIComponent(item.email.trim())}`}>{item.email}</a> : <>{item.email}<span className="staff-field-help">Verify this address before contacting the customer.</span></>}</dd><dt>Phone</dt><dd>{dialNumber ? <a href={`tel:${dialNumber}`}>{item.phone}</a> : <>{item.phone}<span className="staff-field-help">Verify this number before calling.</span></>}</dd>{item.scheduling?.durationMinutes && <><dt>Estimate</dt><dd>{item.scheduling.durationMinutes} minutes · booked estimate</dd></>}{item.notes && <><dt>Notes</dt><dd>{item.notes}</dd></>}</dl>
           {item.status === "pending" && item.scheduling?.holdExpiresAt && <p className="staff-hold">Provisional hold expires {formatShopTimestamp(item.scheduling.holdExpiresAt, timezone)} ({timezone}). Approval always rechecks availability.</p>}
           {item.status === "declined" && <section className="staff-decline-record" aria-label="Decline reason"><h4>Decline reason</h4>{item.decline?.explanation ? <><p><strong>{getDeclineReason(item.decline.category)?.label || "Recorded explanation"}</strong></p><p>{item.decline.explanation}</p>{item.decline.declinedAt && <p>Declined {formatShopTimestamp(item.decline.declinedAt, timezone)} ({timezone})</p>}</> : <p>No reason was recorded with this historical decision.</p>}</section>}
+          {item.status === "cancelled" && <section className="staff-cancellation-record" aria-label="Cancellation details"><h4>Cancellation Details</h4><p>Cancelled by: {item.cancellation?.by === "customer" ? "Customer" : item.cancellation?.by === "mechanic" ? "Mechanic" : "Not recorded"}</p><p>Reason: {(item.cancellation?.by === "customer" ? CUSTOMER_CANCELLATION_REASONS : MECHANIC_CANCELLATION_REASONS).find(reason => reason.id === item.cancellation?.category)?.label || "Not recorded"}</p>{(item.cancellation?.message || item.cancellation?.explanation) && <p>{item.cancellation.message || item.cancellation.explanation}</p>}{item.cancellation?.cancelledAt && <p>Cancelled at: {formatShopTimestamp(item.cancellation.cancelledAt, item.cancellation.timezone || timezone)} ({item.cancellation.timezone || timezone})</p>}<p>Time slot: No longer reserved</p></section>}
           {item.status === "pending" && <><p className="staff-change-guidance">Need another date, parts to order, or more information? Contact the customer using the details above and keep this request pending while you discuss next steps. No replacement time is offered automatically.</p><div className="mechanic-actions"><button type="button" className="mechanic-approve" disabled={!!busyId || decisionUnknown} onClick={() => changeStatus(item._id, "confirmed")}>Confirm</button><button type="button" className="mechanic-decline" disabled={!!busyId || decisionUnknown} onClick={() => { setError(""); setDeclineFields({}); setDeclining(item); }}>Decline Appointment</button></div></>}
+          {item.cancellationEligibility?.canCancel && ["pending", "confirmed"].includes(item.status) && <div className="mechanic-actions"><button type="button" className="staff-danger" disabled={!!busyId || decisionUnknown} onClick={() => { setError(""); setCancellationFields({}); setCancelling(item); }}>Cancel Appointment</button></div>}
         </article>;
       })}
     </div>
     {declining && <DeclineAppointmentDialog key={declining._id} appointment={declining} busy={!!busyId} locked={decisionUnknown} error={error} serverFields={declineFields} onCancel={() => { setDeclining(null); setDeclineFields({}); }} onConfirm={decline => changeStatus(declining._id, "declined", decline)} onRefresh={refreshAppointments} />}
+    {cancelling && <CancelAppointmentDialog key={cancelling._id} appointment={cancelling} busy={!!busyId} locked={decisionUnknown} error={error} serverFields={cancellationFields} onKeep={() => { setCancelling(null); setCancellationFields({}); }} onConfirm={reason => cancelAppointment(cancelling._id, reason)} onRefresh={refreshAppointments} />}
     <p className="mechanic-notice">Appointment decisions are saved securely. Configured email notifications keep their existing delivery and retry behavior.</p>
   </section>;
 }

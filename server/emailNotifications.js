@@ -2,7 +2,7 @@ import { buildEmail, EMAIL_KINDS } from "./emailTemplates.js";
 
 // MongoDB stores the queued email flags in each Appointment document.
 // Only one local API process should run this dispatcher at a time.
-export async function createEmailNotifications({ Appointment, env = process.env, transport, logger = console }) {
+export async function createEmailNotifications({ Appointment, env = process.env, transport, logger = console, management = null }) {
   const keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM", "MECHANIC_NOTIFICATION_EMAIL"];
   const enabled = keys.every((key) => typeof env[key] === "string" && env[key].trim().length > 0);
   if (!enabled) {
@@ -35,39 +35,52 @@ export async function createEmailNotifications({ Appointment, env = process.env,
       const appointments = await Appointment.find({ $or: unsent })
         .sort({ createdAt: 1 }).limit(50).lean();
 
-      for (const appointment of appointments) {
-        const automaticConfirmation = appointment.status === "confirmed" && appointment.scheduling?.confirmationSource === "automatic";
-        if ((appointment.status === "declined" || automaticConfirmation) && appointment.notificationState?.requestCustomer === "pending") {
-          // Also reconcile unsent queues written by an earlier PR revision.
-          // Automatic confirmations and declines belong to decisionCustomer.
-          // A declined request must never send a queued "still pending" receipt.
-          // A failed suppression write retries without sending a false receipt.
-          await Appointment.updateOne({
-            _id: appointment._id,
-            status: appointment.status,
-            ...(automaticConfirmation ? { "scheduling.confirmationSource": "automatic" } : {}),
-            "notificationState.requestCustomer": "pending",
-          }, { $set: { "notificationState.requestCustomer": "suppressed" } });
-          appointment.notificationState.requestCustomer = "suppressed";
-        }
+      for (const queued of appointments) {
         for (const kind of EMAIL_KINDS) {
-          if (appointment.notificationState?.[kind] !== "pending") continue;
           try {
-            const message = buildEmail(kind, appointment, messageOptions);
+            // The batch is only a list of candidate IDs. A decision or
+            // cancellation may have been saved since it was read, or even
+            // while the preceding email was in flight. Read current intent
+            // before every kind; management verifiers remain private here.
+            const appointment = await Appointment.findById(queued._id).select("+management").lean();
+            if (!appointment) continue;
+            const automaticConfirmation = appointment.status === "confirmed" && appointment.scheduling?.confirmationSource === "automatic";
+            const suppress = appointment.status === "cancelled" ? ["requestCustomer", "decisionCustomer"]
+              : appointment.status === "declined" || automaticConfirmation ? ["requestCustomer"] : [];
+            for (const staleKind of suppress) {
+              if (appointment.notificationState?.[staleKind] !== "pending") continue;
+              // Preserve sent history. A failed write leaves a retryable
+              // queue and never permits an obsolete customer message.
+              await Appointment.updateOne({
+                _id: appointment._id, status: appointment.status,
+                ...(automaticConfirmation ? { "scheduling.confirmationSource": "automatic" } : {}),
+                [`notificationState.${staleKind}`]: "pending",
+              }, { $set: { [`notificationState.${staleKind}`]: "suppressed" } });
+              appointment.notificationState[staleKind] = "suppressed";
+            }
+            if (appointment.notificationState?.[kind] !== "pending") continue;
+            const customerLink = kind === "requestCustomer" || kind === "cancellationCustomer"
+              || (kind === "decisionCustomer" && appointment.status === "confirmed");
+            const managementLink = customerLink && management ? await management.emailLink(appointment) : null;
+            const message = buildEmail(kind, appointment, { ...messageOptions, managementLink });
+            // A status change after this read / once transport starts cannot
+            // recall an email. Delivery is at-least-once, never exactly-once.
             await mailer.sendMail(message);
             // Mark as sent only after the email provider accepts it.
             await Appointment.updateOne(
               { _id: appointment._id, [`notificationState.${kind}`]: "pending" },
               { $set: { [`notificationState.${kind}`]: "sent" } },
             );
-          } catch (err) {
+          } catch {
             // Keep it pending. The next queue sweep retries the message.
-            logger.error(`Notification ${kind} failed for appointment ${appointment._id}: ${err.code || err.message}`);
+            // Transport/database errors can echo message bodies or bearer
+            // URLs. Do not log arbitrary error messages or error codes.
+            logger.error(`Notification ${kind} failed for appointment ${queued._id}; delivery will be retried.`);
           }
         }
       }
-    } catch (err) {
-      logger.error(`Notification queue could not be processed: ${err.code || err.message}`);
+    } catch {
+      logger.error("Notification queue could not be processed; it will be retried.");
     } finally {
       processing = false;
     }
