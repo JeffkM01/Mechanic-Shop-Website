@@ -35,17 +35,18 @@ Standalone MongoDB cannot atomically update the coordination document and the se
 
 1. A booking commits a provisional reservation **before** saving its pending appointment. Interrupted/ambiguous saves may leave an orphan hold until expiry. Never release such a hold merely because the response failed: the insert may still commit.
 2. Approval commits a **non-expiring confirmed reservation before** changing the appointment status and queuing the decision email. If the second write fails, the slot remains occupied even after the original pending hold expires. Edward can retry approval or decline the still-pending record; no successful confirmation is reported before its record is persisted.
-3. Decline persists the terminal declined appointment first, then cleans its reservation. Reads also recognize declined records if cleanup is interrupted. A concurrent confirmation cannot resurrect a declined record because the status update is conditional on pending/missing legacy status.
+3. Decline and cancellation persist the terminal appointment, decision metadata, and notification intent first, then clean only that appointment's reservation. Reads also recognize declined/cancelled records if cleanup is interrupted. A concurrent confirmation cannot resurrect a terminal record because its status update is conditional on pending/missing legacy status.
 4. Daily automatic-admission counters are conservative historical admissions: manual approvals do not consume them, but interrupted automatic approvals can consume a place. They are not refunded by cleanup. This can reduce automation, never exceed the daily limit.
 
-Backup/restore **both collections together**. Direct appointment/ledger edits bypass the application contract; use the API. There is no automatic destructive rollback, record deletion, rescheduling, or cancellation of already-confirmed appointments. The singleton is suitable for this small single-shop workflow; much larger/multi-location throughput would require partitioning and careful migration. MongoDB's document-size limit fails writes rather than permitting an unreserved booking.
+Backup/restore **both collections together**. Direct appointment/ledger edits bypass the application contract; use the API. There is no automatic destructive rollback, record deletion, or rescheduling. Eligible future pending and confirmed appointments can be explicitly cancelled through the scoped customer workflow or protected mechanic dashboard; see [Customer appointment management and cancellation](customer-appointment-management.md). The singleton is suitable for this small single-shop workflow; much larger/multi-location throughput would require partitioning and careful migration. MongoDB's document-size limit fails writes rather than permitting an unreserved booking.
 
 ## Pending holds, expiry, and legacy records
 
-- Pending requests occupy their full estimated duration plus buffer until reviewed, declined, or their hold expires. The default hold is 24 hours and can be configured from 1–168 hours.
+- Pending requests occupy their full estimated duration plus buffer until reviewed, declined, cancelled, or their hold expires. The default hold is 24 hours and can be configured from 1–168 hours.
 - Expiration is checked on reads/admissions; it does not depend on a timer or TTL cleanup running on time. Expired ledger holds are pruned on subsequent mutations. **Appointment records stay pending and are never deleted or silently confirmed.**
 - Confirming an expired request requires acquiring capacity again; a conflict returns HTTP 409 and leaves the request pending. Approval may occur inside the original 24-hour notice window or beyond a subsequently shortened horizon. Historical requests at off-grid times such as 08:15 may be approved: the configured start grid applies to new customer bookings, not manual approval of existing requests. Approval must still be future, obey current working hours, breaks, closures, blocked periods, duration/buffer and timezone constraints, and fit capacity. New customer submissions and public slots continue to enforce the configured grid.
-- Confirmed appointments remain occupied until their interval/buffer ends; pending-hold expiry never releases a confirmed appointment.
+- Confirmed appointments remain occupied until their interval/buffer ends or an eligible cancellation is saved; pending-hold expiry never releases a confirmed appointment.
+- Declined and cancelled records are terminal and never consume capacity, including when a stale reservation remains after interrupted cleanup. Cancelling a future pending request whose hold has expired still records its decision without affecting another appointment's reservation. Cancellation history and original date/time remain in MongoDB; there is no record deletion.
 - Existing records without scheduling metadata use the shared catalog's duration (including the old `Air Filter Change` alias) or the conservative unknown-service estimate, plus buffer. Old strings are preserved in storage and email; no migration rewrites them.
 - Legacy pending age is `createdAt + pendingHoldHours`. A request lacking usable age metadata remains occupied until reviewed. Missing legacy status is treated as pending on reads/review without bulk rewriting records.
 - New records snapshot UTC start/end, timezone, duration, buffer, hold expiry, and settings revision. Approvals preserve known duration/buffer bounds even if later defaults change. They revalidate against current working hours/closures. A changed timezone cannot reinterpret an expired request; Edward must decline it and obtain a new request instead.
@@ -78,6 +79,8 @@ The dispatcher also suppresses unsent request receipts on automatically confirme
 
 This removes duplicate **logical confirmation paths**. Existing SMTP retry semantics remain at-least-once: provider acceptance followed by a failed state acknowledgement can still cause a retry. Tests use injected transports only; no external customer email is sent during validation.
 
+Cancellation adds distinct customer/mechanic queue events and suppresses unsent stale customer pending/confirmation messages while preserving sent flags. The dispatcher rechecks current status before each send. A message already in flight cannot be recalled; a later cancellation message carries the saved status. Secure customer links require explicit origin/key/SMTP configuration and are never inferred from Host headers. See [Customer appointment management and cancellation](customer-appointment-management.md) for grant/session lifetime, revocation, provisional cancellation policy, cleanup ordering, notification limits, and manual checks.
+
 ## API contract
 
 | Method and route | Access / purpose |
@@ -86,6 +89,7 @@ This removes duplicate **logical confirmation paths**. Existing SMTP retry seman
 | `GET /api/availability/calendar?service=Oil%20Change&month=YYYY-MM` | Public month summary and shop-local booking bounds; `month` is optional and defaults to the current shop-local month |
 | `POST /api/appointments` | Existing public request body; validates again and reserves atomically; 201 only after the record saves |
 | `PATCH /api/mechanic/appointments/:id` | Existing mechanic session + CSRF; `{status:"confirmed"}` rechecks and acquires capacity; `{status:"declined"}` releases |
+| `POST /api/mechanic/appointments/:id/cancel` | Mechanic session + CSRF; reviewed `{category, explanation?}`; saves cancellation before releasing only its reservation |
 | `GET /api/mechanic/scheduling/settings` | Mechanic session; `{revision, settings}` |
 | `PATCH /api/mechanic/scheduling/settings` | Mechanic session + CSRF; `{revision, settings: partialPatch}`; stale settings revision -> 409 |
 | `POST /api/mechanic/scheduling/blocks` | Mechanic session + CSRF; `{startAt, endAt, reason?, revision?}` -> 201 with generated block ID; stale optional revision -> 409 |

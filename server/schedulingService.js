@@ -2,13 +2,15 @@ import mongoose from "mongoose";
 import { randomUUID } from "node:crypto";
 import { SERVICES, getService } from "../shared/services.js";
 import { validateDeclineReason } from "../shared/declineReasons.js";
+import { validateCancellation } from "../shared/cancellations.js";
+import { shopTimezoneFormatter } from "../shared/shopTime.js";
 import { defaultSettings, mergeSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
 
 const idOf = (value) => String(value);
 const overlaps = (a, b) => +new Date(a.startAt) < +new Date(b.occupiedUntil ?? b.endAt) && +new Date(b.startAt) < +new Date(a.occupiedUntil ?? a.endAt);
 const conflict = () => new SchedulingError(409, "That start time is no longer available. Please choose another time.", "SLOT_UNAVAILABLE");
 
-export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date() }) {
+export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date(), management = null }) {
   async function readState() {
     for (let attempt = 0; attempt < 64; attempt++) {
       const state = await SchedulingState.findById("shop").lean();
@@ -62,7 +64,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     ] }).select("_id status date time service createdAt scheduling").lean();
     const records = new Map(appointments.map(record => [idOf(record._id), record]));
     const reservations = state.reservations.filter(reservation => {
-      if (records.get(idOf(reservation.appointmentId))?.status === "declined") return false;
+      if (["declined", "cancelled"].includes(records.get(idOf(reservation.appointmentId))?.status)) return false;
       if (+new Date(reservation.occupiedUntil) <= +clock) return false;
       return reservation.state === "confirmed" || +new Date(reservation.holdExpiresAt) > +clock;
     });
@@ -263,12 +265,15 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       const reservation = reservationFor(id, candidate, state, clock);
       return {
         next: { reservations: [...current.reservations, reservation] },
-        result: { reservation, attemptAutomatic: automaticEligible(state.settings, getService(value.service)) },
+        result: { reservation, clock, attemptAutomatic: automaticEligible(state.settings, getService(value.service)) },
       };
     });
     // Reserve first. A crash/ambiguous insert failure can over-block until hold
     // expiry, but must never release a slot while a write might still commit.
-    let appointment = await new Appointment({ ...value, _id: id, status: "pending", scheduling: snapshot(reserved.reservation) }).save({ writeConcern: { w: "majority", j: true } });
+    let appointment = await new Appointment({
+      ...value, _id: id, status: "pending", scheduling: snapshot(reserved.reservation),
+      ...(management?.enabled ? { management: management.createGrant(idOf(id), reserved.clock) } : {}),
+    }).save({ writeConcern: { w: "majority", j: true } });
     if (reserved.attemptAutomatic) {
       try { appointment = await reviewAppointment(idOf(id), "confirmed", { automatic: true }); }
       catch (error) {
@@ -277,6 +282,91 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       }
     }
     return appointment;
+  }
+
+  // Use the recorded appointment instant and timezone, not current settings or
+  // a caller's clock. An expired provisional hold does not cancel the request
+  // or remove the customer's ability to cancel it before its scheduled start.
+  function getCancellationEligibility(appointment, clock = new Date(now())) {
+    const denied = (code, message) => ({ canCancel: false, code, message });
+    if (appointment?.status === "cancelled") return denied("ALREADY_CANCELLED", "This appointment has already been cancelled.");
+    if (appointment?.status && !["pending", "confirmed"].includes(appointment.status)) {
+      return denied("CANCELLATION_NOT_ALLOWED", "This appointment cannot be cancelled online. Please contact the shop.");
+    }
+    try {
+      if (!appointment || !Number.isFinite(+clock)) throw new Error("Missing appointment or server clock");
+      const timezone = appointment.scheduling?.timezone || "America/Chicago";
+      const formatter = shopTimezoneFormatter(timezone);
+      const { date, time } = appointment;
+      if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)
+        || typeof time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("Missing appointment wall time");
+      let startAt;
+      if (appointment.scheduling?.startAt != null) {
+        startAt = new Date(appointment.scheduling.startAt);
+        if (!Number.isFinite(+startAt)) throw new Error("Invalid recorded instant");
+        const parts = Object.fromEntries(formatter.formatToParts(startAt).map(({ type, value }) => [type, value]));
+        // Snapshots can disambiguate a daylight-saving fold, but must still
+        // describe the original date/time shown to the customer.
+        if (`${parts.year}-${parts.month}-${parts.day}` !== date || `${parts.hour}:${parts.minute}` !== time) throw new Error("Inconsistent recorded time");
+      } else startAt = localDateTimeToUtc(date, time, timezone);
+      if (+startAt <= +clock) return { ...denied("APPOINTMENT_STARTED", "Online cancellation is no longer available for this appointment. Please contact the shop."), startAt: startAt.toISOString(), timezone };
+      return { canCancel: true, code: "CANCELLATION_ALLOWED", message: "You can cancel this appointment until its scheduled start.", startAt: startAt.toISOString(), timezone };
+    } catch {
+      return denied("SCHEDULE_UNAVAILABLE", "We could not verify this appointment's scheduled time. Please contact the shop to cancel.");
+    }
+  }
+
+  async function cancelAppointment(id, actor, input = {}) {
+    if (!/^[a-f\d]{24}$/i.test(id)) throw new SchedulingError(400, "Invalid appointment ID.");
+    if (!["customer", "mechanic"].includes(actor)) throw new SchedulingError(400, "Invalid cancellation actor.");
+    for (let attempt = 0; attempt < 16; attempt++) {
+      // Lean reads preserve absent legacy status/flags instead of applying
+      // schema defaults that would make the conditional write miss the record.
+      const appointment = await Appointment.findById(id).lean();
+      if (!appointment) throw new SchedulingError(404, "Appointment not found.");
+      // Repeated requests do not replace the original actor, explanation,
+      // timestamp or sent flags, and do not create new notification intents.
+      if (appointment.status === "cancelled") return Appointment.findById(id);
+      const clock = new Date(now());
+      const eligibility = getCancellationEligibility(appointment, clock);
+      if (!eligibility.canCancel) throw new SchedulingError(409, eligibility.message, eligibility.code);
+      const prepared = validateCancellation(actor, input);
+      if (prepared.error) {
+        const error = new SchedulingError(400, prepared.error, "INVALID_CANCELLATION_REASON");
+        error.fields = prepared.fields;
+        throw error;
+      }
+      const flags = appointment.notificationState ?? {};
+      const flagNames = ["requestCustomer", "decisionCustomer", "cancellationCustomer", "cancellationMechanic"];
+      const filter = { _id: id, status: appointment.status === undefined ? { $exists: false } : appointment.status };
+      for (const name of flagNames) {
+        // Pin the flags observed in this read. If the dispatcher marks one sent
+        // first, retry and preserve it instead of overwriting delivery history.
+        filter[`notificationState.${name}`] = flags[name] === undefined ? { $exists: false } : flags[name];
+      }
+      const change = {
+        status: "cancelled",
+        cancellation: {
+          by: actor, ...prepared.value, cancelledAt: clock,
+          originalDate: appointment.date, originalTime: appointment.time,
+          timezone: eligibility.timezone,
+        },
+        "notificationState.cancellationCustomer": flags.cancellationCustomer === "sent" ? "sent" : "pending",
+        ...(actor === "customer" ? { "notificationState.cancellationMechanic": flags.cancellationMechanic === "sent" ? "sent" : "pending" } : {}),
+        ...(flags.requestCustomer === "pending" ? { "notificationState.requestCustomer": "suppressed" } : {}),
+        ...(flags.decisionCustomer === "pending" ? { "notificationState.decisionCustomer": "suppressed" } : {}),
+      };
+      const cancelled = await Appointment.findOneAndUpdate(filter, { $set: change }, {
+        returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true },
+      });
+      if (!cancelled) continue;
+      // The terminal record and email intents are durable before releasing its
+      // own reservation. Context reads also reconcile cancelled reservations
+      // if this cleanup fails or a concurrent approval left a stale ledger row.
+      await commit((_state, _clock, current) => ({ next: { reservations: current.reservations.filter(item => idOf(item.appointmentId) !== id) }, result: null }));
+      return cancelled;
+    }
+    throw new SchedulingError(409, "This appointment changed. Refresh its status before trying again.", "APPOINTMENT_CHANGED");
   }
 
   async function reviewAppointment(id, status, { automatic = false, decline } = {}) {
@@ -398,5 +488,5 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return { removed: true };
   }
 
-  return { getSettings, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, addBlockedPeriod, removeBlockedPeriod };
+  return { getSettings, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
 }

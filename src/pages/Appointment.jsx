@@ -294,6 +294,7 @@ function BookingExperience({ initialService, details, setDetails }) {
         {saved.status === "pending" && saved.holdExpiresAt && <p className="booking-hold">Your provisional time reservation expires <time dateTime={saved.holdExpiresAt}>{formatShopTimestamp(saved.holdExpiresAt, saved.request.timezone)}</time> ({saved.request.timezone}). Your request stays on file after expiry, but availability must be checked again before approval.</p>}
         <Summary request={saved.request} />
         {saved.emailNotification === "queued" && <p className="booking-receipt-note">A status email has been queued for delivery. Keep your reference ID for your records.</p>}
+        <p className="booking-receipt-note">{saved.managementAccess ? "Open the secure Manage My Appointment link in your email to view or cancel this appointment. Your reference ID alone does not provide access." : "To check or cancel this request, contact the shop. Secure online management is unavailable for this request."}</p>
         <div className="booking-actions"><button type="button" className="button button-primary" onClick={anotherRequest}>Make another request <Icon name="arrow" /></button><Link className="text-link" to="/">Back to the shop</Link></div>
       </section> : <>
         <form onSubmit={review} className="booking-form" noValidate>

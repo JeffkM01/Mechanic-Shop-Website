@@ -17,14 +17,52 @@ const sample = {
   notificationState: { requestCustomer: "pending", requestMechanic: "pending", decisionCustomer: "not-applicable" },
 };
 
-function fakeAppointmentModel(records) {
+const emailOptions = { from: config.MAIL_FROM, mechanicEmail: config.MECHANIC_NOTIFICATION_EMAIL };
+
+function cancelledRecord(by = "customer", changes = {}) {
+  return {
+    ...structuredClone(sample), status: "cancelled",
+    cancellation: {
+      by, category: by === "customer" ? "plans_changed" : "equipment_unavailable",
+      ...(by === "customer" ? { message: "I will submit a new request later." } : { explanation: "The required equipment is unavailable. Please contact the shop about another visit." }),
+      cancelledAt: "2026-11-05T20:30:00Z", originalDate: "2026-11-06", originalTime: "10:30", timezone: "America/Chicago",
+    },
+    notificationState: {
+      requestCustomer: "sent", requestMechanic: "sent", decisionCustomer: "not-applicable",
+      cancellationCustomer: "pending", cancellationMechanic: by === "customer" ? "pending" : "not-applicable",
+    },
+    ...changes,
+  };
+}
+
+function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect } = {}) {
   return {
     find() {
       return {
         sort() { return this; },
         limit() { return this; },
         async lean() {
-          return records.filter((item) => Object.values(item.notificationState || {}).includes("pending")).map(item => structuredClone(item));
+          const batch = records.filter((item) => Object.values(item.notificationState || {}).includes("pending")).map(item => {
+            const copy = structuredClone(item);
+            delete copy.management;
+            return copy;
+          });
+          afterBatch?.();
+          return batch;
+        },
+      };
+    },
+    findById(id) {
+      let privateManagement = false;
+      return {
+        select(fields) { privateManagement = fields === "+management"; onSelect?.(fields); return this; },
+        async lean() {
+          beforeFreshRead?.(id);
+          const record = records.find(item => item._id === id);
+          if (!record) return null;
+          const copy = structuredClone(record);
+          if (!privateManagement) delete copy.management;
+          return copy;
         },
       };
     },
@@ -422,6 +460,320 @@ test("unsafe legacy recipients leave queues pending without sending private appo
   assert.equal(record.notificationState.decisionCustomer, "pending");
   assert.equal(record.status, "declined");
   assert.equal(logs.length, 4);
-  assert.ok(logs.every(message => message.includes("Customer notification address needs review")));
+  assert.ok(logs.every(message => message.includes("delivery will be retried")));
   assert.ok(logs.every(message => !message.includes(record.email) && !message.includes(record.decline.explanation)));
+});
+
+test("customer cancellation acknowledgement and mechanic notice use saved original time, actor, and reason", () => {
+  const record = cancelledRecord();
+  // The immutable cancellation snapshot, rather than a mutable display field,
+  // supplies the original appointment details.
+  record.date = "2026-12-10";
+  record.time = "08:00";
+  record.scheduling = { timezone: "America/Los_Angeles" };
+  const before = structuredClone(record);
+  const customer = buildEmail("cancellationCustomer", record, emailOptions);
+  const mechanic = buildEmail("cancellationMechanic", record, emailOptions);
+  assert.equal(customer.subject, "Appointment Cancelled — Ed's Auto Shop");
+  assert.equal(customer.to, sample.email);
+  assert.equal(customer.replyTo, config.MECHANIC_NOTIFICATION_EMAIL);
+  assert.match(customer.text, /Brake Repairs appointment for 11\/06\/2026 at 10:30 AM \(America\/Chicago\) has been cancelled as you requested/);
+  assert.match(customer.text, /Cancelled at: 11\/05\/2026 at 2:30 PM \(America\/Chicago\)/);
+  assert.match(customer.text, /Cancelled by: Customer/);
+  assert.match(customer.text, /My plans changed/);
+  assert.ok(customer.text.includes(record.cancellation.message));
+  assert.match(customer.text, /submit a new request through our website/);
+  assert.match(customer.text, /No replacement appointment has been booked/);
+  assert.equal(mechanic.to, config.MECHANIC_NOTIFICATION_EMAIL);
+  assert.equal(mechanic.replyTo, sample.email);
+  assert.match(mechanic.subject, /Customer Cancelled/);
+  assert.match(mechanic.text, /customer cancelled/i);
+  assert.match(mechanic.text, /Do not confirm this cancelled appointment/);
+  assert.doesNotMatch(customer.text + mechanic.text, /2026-11-06|10:30\s*\(America|2026-11-05T|12\/10\/2026|8:00 AM/);
+  assert.deepEqual(record, before);
+});
+
+test("mechanic cancellation customer email contains final explanation and fixed safe headers", () => {
+  const explanation = 'The lift is unavailable. <img src="x" onerror="alert(1)">\r\nBcc: unrelated@example.invalid';
+  const record = cancelledRecord("mechanic");
+  record.cancellation.explanation = explanation;
+  const email = buildEmail("cancellationCustomer", record, emailOptions);
+  assert.match(email.text, /shop has cancelled your Brake Repairs appointment/);
+  assert.match(email.text, /Reason category: Equipment unavailable/);
+  assert.ok(email.text.includes(`Reason: ${explanation}`));
+  assert.match(email.text, /Cancelled by: Mechanic/);
+  assert.match(email.text, /We apologize for the inconvenience/);
+  assert.equal(email.html, undefined);
+  assert.equal(email.bcc, undefined);
+  assert.equal(email.cc, undefined);
+  assert.equal(email.to, sample.email);
+  assert.equal(email.replyTo, config.MECHANIC_NOTIFICATION_EMAIL);
+  assert.equal(email.subject, "Appointment Cancelled — Ed's Auto Shop");
+  assert.throws(() => buildEmail("cancellationMechanic", record, emailOptions), /Only customer cancellations/);
+  assert.throws(() => buildEmail("cancellationCustomer", sample, emailOptions), /saved cancellation/);
+  assert.throws(() => buildEmail("requestCustomer", record, emailOptions), /cancellation notification/);
+  assert.throws(() => buildEmail("decisionCustomer", record, emailOptions), /Cannot send a decision/);
+});
+
+test("optional customer cancellation reason is not fabricated and unsafe legacy addresses remain rejected", () => {
+  const record = cancelledRecord();
+  delete record.cancellation.category;
+  delete record.cancellation.message;
+  assert.match(buildEmail("cancellationCustomer", record, emailOptions).text, /Customer reason: Not provided/);
+  const mechanic = cancelledRecord("mechanic");
+  delete mechanic.cancellation.explanation;
+  assert.match(buildEmail("cancellationCustomer", mechanic, emailOptions).text, /explanation was not recorded/);
+  for (const kind of ["cancellationCustomer", "cancellationMechanic"]) {
+    assert.throws(() => buildEmail(kind, { ...record, email: "customer@example.test\r\nBcc: unrelated@example.test" }, emailOptions), /address needs review/);
+  }
+});
+
+test("eligible customer emails include the private fragment link; legacy or expired grants use truthful contact fallback", () => {
+  const managementLink = `https://shop.example.test/manage-appointment#id=${sample._id}&token=synthetic-bearer`;
+  const cases = [
+    ["requestCustomer", sample],
+    ["decisionCustomer", { ...sample, status: "confirmed" }],
+    ["cancellationCustomer", cancelledRecord()],
+  ];
+  for (const [kind, record] of cases) {
+    const linked = buildEmail(kind, record, { ...emailOptions, managementLink });
+    assert.ok(linked.text.includes(managementLink));
+    assert.match(linked.text, /Keep this private link to yourself/);
+    assert.doesNotMatch(linked.text, /localhost/);
+    assert.equal(linked.html, undefined);
+    for (const link of [undefined, null]) {
+      const fallback = buildEmail(kind, record, { ...emailOptions, managementLink: link });
+      assert.match(fallback.text, /contact the shop by replying to this email/);
+      assert.match(fallback.text, /secure online management link is not available/);
+      assert.doesNotMatch(fallback.text, /manage-appointment|token=|localhost|Reschedule/);
+    }
+  }
+});
+
+test("customer cancellation queues deliver once each, while mechanic cancellation sends only to the customer", async () => {
+  for (const by of ["customer", "mechanic"]) {
+    const record = cancelledRecord(by);
+    const sent = [];
+    const service = await createEmailNotifications({
+      Appointment: fakeAppointmentModel([record]), env: config,
+      transport: { async sendMail(message) { sent.push(message); } },
+    });
+    await service.processPending();
+    await service.processPending();
+    assert.equal(sent.filter(message => message.to === sample.email).length, 1);
+    assert.equal(sent.filter(message => message.to === config.MECHANIC_NOTIFICATION_EMAIL).length, by === "customer" ? 1 : 0);
+    assert.equal(record.notificationState.cancellationCustomer, "sent");
+    assert.equal(record.notificationState.cancellationMechanic, by === "customer" ? "sent" : "not-applicable");
+    assert.equal(record.status, "cancelled");
+  }
+});
+
+test("failed cancellation delivery preserves durable cancellation and retries saved intent without new events", async () => {
+  const record = cancelledRecord();
+  const saved = structuredClone({ status: record.status, cancellation: record.cancellation });
+  const attempts = [];
+  const deliveries = [];
+  let failCustomer = true;
+  const service = await createEmailNotifications({
+    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} },
+    transport: { async sendMail(message) {
+      attempts.push(message);
+      if (message.to === sample.email && failCustomer) { failCustomer = false; throw new Error("Synthetic cancellation SMTP outage"); }
+      deliveries.push(message);
+    } },
+  });
+  await service.processPending();
+  assert.deepEqual({ status: record.status, cancellation: record.cancellation }, saved);
+  assert.equal(record.notificationState.cancellationCustomer, "pending");
+  assert.equal(record.notificationState.cancellationMechanic, "sent");
+  await Promise.all([service.processPending(), service.processPending()]);
+  await service.processPending();
+  assert.equal(record.notificationState.cancellationCustomer, "sent");
+  assert.equal(attempts.length, 3);
+  assert.equal(deliveries.length, 2);
+  assert.deepEqual(attempts[0], attempts[2]);
+  assert.deepEqual({ status: record.status, cancellation: record.cancellation }, saved);
+});
+
+test("a cancelled queue suppresses obsolete pending receipt and confirmation while preserving sent history", async () => {
+  for (const receipt of ["pending", "sent"]) {
+    const record = cancelledRecord("customer", {
+      notificationState: {
+        requestCustomer: receipt, requestMechanic: "pending", decisionCustomer: "pending",
+        cancellationCustomer: "pending", cancellationMechanic: "pending",
+      },
+    });
+    const sent = [];
+    const service = await createEmailNotifications({ Appointment: fakeAppointmentModel([record]), env: config, transport: { async sendMail(message) { sent.push(message); } } });
+    await service.processPending();
+    await service.processPending();
+    assert.equal(record.notificationState.requestCustomer, receipt === "sent" ? "sent" : "suppressed");
+    assert.equal(record.notificationState.decisionCustomer, "suppressed");
+    assert.equal(sent.length, 3, "only the current-state mechanic notice and two cancellation messages are delivered");
+    assert.ok(sent.every(message => !/PENDING|CONFIRMED|dashboard to approve or decline/.test(message.text)));
+    const delayed = sent.find(message => /new appointment request/.test(message.subject));
+    assert.match(delayed.text, /already been CANCELLED/);
+    assert.match(delayed.text, /No approval action is available/);
+  }
+  const record = cancelledRecord("mechanic", { notificationState: { requestCustomer: "sent", requestMechanic: "sent", decisionCustomer: "sent", cancellationCustomer: "pending", cancellationMechanic: "not-applicable" } });
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel([record]), env: config, transport: { async sendMail() {} } });
+  await service.processPending();
+  assert.equal(record.notificationState.decisionCustomer, "sent");
+});
+
+test("a stale batch cannot dispatch an old confirmation after cancellation was durably saved", async () => {
+  const record = { ...structuredClone(sample), status: "confirmed", notificationState: { requestCustomer: "sent", requestMechanic: "sent", decisionCustomer: "pending" } };
+  const model = fakeAppointmentModel([record], { afterBatch() { Object.assign(record, cancelledRecord("mechanic")); } });
+  const sent = [];
+  const service = await createEmailNotifications({ Appointment: model, env: config, transport: { async sendMail(message) { sent.push(message); } } });
+  await service.processPending();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /Appointment Cancelled/);
+  assert.equal(record.notificationState.decisionCustomer, "not-applicable");
+});
+
+test("each kind reads current status when cancellation occurs during a previous mechanic email", async () => {
+  const record = { ...structuredClone(sample), status: "confirmed", notificationState: { requestCustomer: "sent", requestMechanic: "pending", decisionCustomer: "pending" } };
+  const sent = [];
+  const service = await createEmailNotifications({
+    Appointment: fakeAppointmentModel([record]), env: config,
+    transport: { async sendMail(message) {
+      sent.push(message);
+      if (message.to === config.MECHANIC_NOTIFICATION_EMAIL) {
+        const cancellation = cancelledRecord("mechanic");
+        record.status = "cancelled";
+        record.cancellation = cancellation.cancellation;
+        Object.assign(record.notificationState, { decisionCustomer: "suppressed", cancellationCustomer: "pending", cancellationMechanic: "not-applicable" });
+      }
+    } },
+  });
+  await service.processPending();
+  assert.equal(sent.length, 2);
+  assert.equal(sent.filter(message => /appointment confirmed/.test(message.subject)).length, 0);
+  assert.match(sent[1].subject, /Appointment Cancelled/);
+});
+
+test("a confirmation already handed to transport may finish before the saved cancellation notice", async () => {
+  const record = { ...structuredClone(sample), status: "confirmed", notificationState: { requestCustomer: "sent", requestMechanic: "sent", decisionCustomer: "pending" } };
+  const sent = [];
+  const service = await createEmailNotifications({
+    Appointment: fakeAppointmentModel([record]), env: config,
+    transport: { async sendMail(message) {
+      sent.push(message);
+      if (/appointment confirmed/.test(message.subject)) {
+        record.status = "cancelled";
+        record.cancellation = cancelledRecord("mechanic").cancellation;
+        Object.assign(record.notificationState, { decisionCustomer: "suppressed", cancellationCustomer: "pending", cancellationMechanic: "not-applicable" });
+      }
+    } },
+  });
+  await service.processPending();
+  await service.processPending();
+  assert.equal(sent.length, 2, "an email already in flight cannot be recalled; cancellation follows it once");
+  assert.match(sent[0].subject, /appointment confirmed/);
+  assert.match(sent[1].subject, /Appointment Cancelled/);
+  assert.equal(record.notificationState.decisionCustomer, "suppressed", "transport acknowledgement cannot overwrite cancellation suppression");
+  assert.equal(record.status, "cancelled");
+});
+
+test("management links use private fresh metadata without persisting raw credentials or exposing them in errors", async () => {
+  const bearer = "synthetic-private-bearer-DO-NOT-LOG";
+  const managementLink = `https://shop.example.test/manage-appointment#id=${sample._id}&token=${bearer}`;
+  const record = {
+    ...structuredClone(sample), management: { nonce: "synthetic-nonce", tokenHash: "only-a-verifier", keyId: "test-key" },
+    notificationState: { requestCustomer: "pending", requestMechanic: "sent", decisionCustomer: "not-applicable" },
+  };
+  const selections = [];
+  const logs = [];
+  const attempts = [];
+  const before = structuredClone(record.management);
+  let fail = true;
+  const service = await createEmailNotifications({
+    Appointment: fakeAppointmentModel([record], { onSelect(fields) { selections.push(fields); } }), env: config,
+    management: { emailLink(appointment) { assert.deepEqual(appointment.management, before); return managementLink; } },
+    transport: { async sendMail(message) {
+      attempts.push(message);
+      if (fail) {
+        const error = new Error(`SMTP rejected body ${message.text}`);
+        error.code = bearer;
+        throw error;
+      }
+    } },
+    logger: { error(message) { logs.push(message); } },
+  });
+  await service.processPending();
+  assert.equal(record.notificationState.requestCustomer, "pending");
+  assert.ok(attempts[0].text.includes(managementLink));
+  assert.ok(selections.every(fields => fields === "+management"));
+  assert.ok(logs.length > 0);
+  assert.ok(logs.every(message => !message.includes(bearer) && !message.includes("manage-appointment") && !message.includes("Customer:")));
+  assert.equal(JSON.stringify(record).includes(bearer), false);
+  assert.deepEqual(record.management, before);
+  fail = false;
+  await service.processPending();
+  assert.equal(record.notificationState.requestCustomer, "sent");
+  assert.equal(new URL(managementLink).search, "");
+  assert.match(new URL(managementLink).hash, /token=/);
+});
+
+test("provider acceptance followed by a failed cancellation acknowledgement retries the same durable intent", async () => {
+  const record = cancelledRecord("mechanic");
+  const before = structuredClone(record.cancellation);
+  const model = fakeAppointmentModel([record]);
+  const updateOne = model.updateOne.bind(model);
+  let failAcknowledgement = true;
+  model.updateOne = async (query, change) => {
+    if (failAcknowledgement && change.$set?.["notificationState.cancellationCustomer"] === "sent") {
+      failAcknowledgement = false;
+      throw new Error("Synthetic acknowledgement failure after provider acceptance");
+    }
+    return updateOne(query, change);
+  };
+  const sent = [];
+  const service = await createEmailNotifications({
+    Appointment: model, env: config, logger: { error() {} },
+    transport: { async sendMail(message) { sent.push(message); } },
+  });
+  await service.processPending();
+  assert.equal(record.notificationState.cancellationCustomer, "pending");
+  assert.equal(sent.length, 1, "the provider accepted the first attempt");
+  await service.processPending();
+  await service.processPending();
+  assert.equal(sent.length, 2, "at-least-once retries may duplicate external delivery after acknowledgement failure");
+  assert.deepEqual(sent[0], sent[1]);
+  assert.equal(record.notificationState.cancellationCustomer, "sent");
+  assert.equal(record.status, "cancelled");
+  assert.deepEqual(record.cancellation, before);
+});
+
+test("failed stale-message suppression never sends an obsolete pending receipt or confirmation", async () => {
+  const record = cancelledRecord("mechanic", {
+    notificationState: { requestCustomer: "pending", requestMechanic: "sent", decisionCustomer: "pending", cancellationCustomer: "pending", cancellationMechanic: "not-applicable" },
+  });
+  const model = fakeAppointmentModel([record]);
+  const updateOne = model.updateOne.bind(model);
+  let failSuppression = true;
+  model.updateOne = async (query, change) => {
+    if (failSuppression && Object.values(change.$set || {}).includes("suppressed")) {
+      throw new Error("Synthetic stale-message suppression failure");
+    }
+    return updateOne(query, change);
+  };
+  const sent = [];
+  const service = await createEmailNotifications({
+    Appointment: model, env: config, logger: { error() {} },
+    transport: { async sendMail(message) { sent.push(message); } },
+  });
+  await service.processPending();
+  assert.equal(sent.length, 0, "failed reconciliation must fail closed before sending stale status");
+  assert.equal(record.notificationState.requestCustomer, "pending");
+  assert.equal(record.notificationState.decisionCustomer, "pending");
+  assert.equal(record.notificationState.cancellationCustomer, "pending");
+  failSuppression = false;
+  await service.processPending();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /Appointment Cancelled/);
+  assert.equal(record.notificationState.requestCustomer, "suppressed");
+  assert.equal(record.notificationState.decisionCustomer, "suppressed");
+  assert.equal(record.notificationState.cancellationCustomer, "sent");
 });
