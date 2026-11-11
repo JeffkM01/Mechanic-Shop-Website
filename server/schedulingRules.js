@@ -1,16 +1,15 @@
-import { SERVICES, getService } from "../shared/services.js";
+import { SERVICES, getService, requiresMechanicApproval } from "../shared/services.js";
+import { getServiceCatalog, validateServiceCatalog } from "../shared/serviceCatalog.js";
 import { resolveShopLocalTime, shopTimezoneFormatter, ShopTimeError } from "../shared/shopTime.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const canonicalNames = SERVICES.map(({ name }) => name);
-const approvalOnlyServices = SERVICES.filter(({ category }) => category === "repairs").map(({ name }) => name);
 const settingsKeys = [
   "timezone", "weeklyHours", "breaks", "closedDates", "blockedPeriods",
   "capacity", "maxAutomaticPerDay", "minimumNoticeHours", "bookingHorizonDays",
   "startIncrementMinutes", "bufferMinutes", "pendingHoldHours",
   "automaticBookingEnabled", "businessHoursVerified", "capacityVerified",
-  "serviceRules", "legacyUnknownDurationMinutes",
+  "serviceRules", "serviceCatalog", "legacyUnknownDurationMinutes",
 ];
 
 export class SchedulingError extends Error {
@@ -152,9 +151,10 @@ export function defaultSettings() {
     automaticBookingEnabled: false,
     businessHoursVerified: false,
     capacityVerified: false,
-    serviceRules: Object.fromEntries(SERVICES.map(({ name }) => [name, {
-      durationMinutes: shortServices.includes(name) ? 30 : hourServices.includes(name) ? 60 : name === "Engine Diagnostics" ? 90 : 120,
-      requiresApproval: approvalOnlyServices.includes(name),
+    serviceCatalog: SERVICES.map(service => ({ ...service, legacyNames: [...service.legacyNames] })),
+    serviceRules: Object.fromEntries(SERVICES.map(service => [service.name, {
+      durationMinutes: shortServices.includes(service.name) ? 30 : hourServices.includes(service.name) ? 60 : service.name === "Engine Diagnostics" ? 90 : 120,
+      requiresApproval: requiresMechanicApproval(service),
     }])),
     legacyUnknownDurationMinutes: 120,
   };
@@ -185,7 +185,13 @@ function utcTimestamp(value) {
 
 export function validateSettings(settings) {
   checkKeys(settings, settingsKeys, "Scheduling settings");
-  if (settingsKeys.some((key) => !Object.hasOwn(settings, key))) invalid("Scheduling settings are incomplete.");
+  // Older persisted settings have no catalog. Normalize to the shared seed
+  // without rewriting appointment service names or accepting arbitrary keys.
+  if (settingsKeys.some((key) => key !== "serviceCatalog" && !Object.hasOwn(settings, key))) invalid("Scheduling settings are incomplete.");
+  let serviceCatalog;
+  try { serviceCatalog = validateServiceCatalog(getServiceCatalog(settings)); }
+  catch (error) { invalid(error.message, "INVALID_SERVICE_CATALOG"); }
+  const canonicalNames = serviceCatalog.map(service => service.name);
   formatter(settings.timezone);
   checkKeys(settings.weeklyHours, ["0", "1", "2", "3", "4", "5", "6"], "Weekly hours");
   const weeklyHours = Object.fromEntries(Array.from({ length: 7 }, (_, day) => [String(day), validateIntervals(settings.weeklyHours[day], "Weekly hours")]));
@@ -210,10 +216,10 @@ export function validateSettings(settings) {
     checkKeys(rule, ["durationMinutes", "requiresApproval"], `Rule for ${name}`);
     integer(rule.durationMinutes, 5, 720, "Service duration");
     if (typeof rule.requiresApproval !== "boolean") invalid("Service approval requirements must be boolean.");
-    if (approvalOnlyServices.includes(name) && !rule.requiresApproval) invalid(`${name} requires mechanic approval.`);
+    if (requiresMechanicApproval(getService(name, serviceCatalog)) && !rule.requiresApproval) invalid(`${name} requires mechanic approval.`);
     return [name, { durationMinutes: rule.durationMinutes, requiresApproval: rule.requiresApproval }];
   }));
-  const result = { ...settings, weeklyHours, breaks, closedDates, blockedPeriods, serviceRules };
+  const result = { ...settings, weeklyHours, breaks, closedDates, blockedPeriods, serviceRules, serviceCatalog };
   for (const [key, min, max] of [
     ["capacity", 1, 20], ["maxAutomaticPerDay", 0, 100], ["minimumNoticeHours", 0, 720],
     ["bookingHorizonDays", 1, 365], ["startIncrementMinutes", 5, 120], ["bufferMinutes", 0, 120],
@@ -230,12 +236,16 @@ export function mergeSettings(current, patch) {
   const base = validateSettings(current);
   checkKeys(patch, settingsKeys, "Scheduling settings patch");
   const merged = { ...base, ...patch };
+  if (Object.hasOwn(patch, "serviceCatalog")) {
+    try { merged.serviceCatalog = validateServiceCatalog(patch.serviceCatalog, base.serviceCatalog); }
+    catch (error) { invalid(error.message, "INVALID_SERVICE_CATALOG"); }
+  }
   if (Object.hasOwn(patch, "weeklyHours")) {
     checkKeys(patch.weeklyHours, ["0", "1", "2", "3", "4", "5", "6"], "Weekly hours patch");
     merged.weeklyHours = { ...base.weeklyHours, ...patch.weeklyHours };
   }
   if (Object.hasOwn(patch, "serviceRules")) {
-    checkKeys(patch.serviceRules, canonicalNames, "Service rules patch");
+    checkKeys(patch.serviceRules, merged.serviceCatalog.map(service => service.name), "Service rules patch");
     merged.serviceRules = { ...base.serviceRules };
     for (const [name, rule] of Object.entries(patch.serviceRules)) {
       checkKeys(rule, ["durationMinutes", "requiresApproval"], `Rule patch for ${name}`);
@@ -250,9 +260,14 @@ export function mergeSettings(current, patch) {
   return validateSettings(merged);
 }
 
-function serviceRule(settings, name) {
-  const service = getService(name);
-  if (!service) invalid("Select a valid service.", "INVALID_SERVICE");
+function serviceRule(settings, name, { approval = false } = {}) {
+  const service = getService(name, getServiceCatalog(settings));
+  if (!service || (!approval && service.active === false)) {
+    const message = service ? "This service is no longer available for new appointments. Please choose another service." : "Select a valid service.";
+    const error = new SchedulingError(400, message, service ? "SERVICE_UNAVAILABLE" : "INVALID_SERVICE");
+    error.fields = { service: message };
+    throw error;
+  }
   const rule = settings.serviceRules[service.name];
   if (!rule) invalid("The service has no scheduling rule.");
   return { service, rule };
@@ -263,7 +278,7 @@ function overlaps(start, end, otherStart, otherEnd) {
 }
 
 export function buildCandidate(settings, serviceName, date, time, nowDate, { approval = false, durationMinutes, bufferMinutes: bufferOverride } = {}) {
-  const { service, rule } = serviceRule(settings, serviceName);
+  const { service, rule } = serviceRule(settings, serviceName, { approval });
   const calendarDay = parseDate(date);
   const minutes = parseTime(time);
   const now = instant(nowDate, "Current time");
@@ -298,7 +313,7 @@ export function buildCandidate(settings, serviceName, date, time, nowDate, { app
   return {
     startAt, endAt, occupiedUntil, durationMinutes: duration,
     bufferMinutes, timezone: settings.timezone, date, time,
-    requiresApproval: rule.requiresApproval || service.provisional,
+    requiresApproval: rule.requiresApproval || requiresMechanicApproval(service),
     provisional: service.provisional,
   };
 }
@@ -372,8 +387,8 @@ export function legacyOccurrence(appointment, settings, nowDate) {
     }
   }
   try {
-    const service = getService(appointment.service);
-    const duration = scheduling.durationMinutes ?? (service ? settings.serviceRules[service.name].durationMinutes : settings.legacyUnknownDurationMinutes);
+    const service = getService(appointment.service, getServiceCatalog(settings));
+    const duration = scheduling.durationMinutes ?? (service ? settings.serviceRules[service.name]?.durationMinutes ?? settings.legacyUnknownDurationMinutes : settings.legacyUnknownDurationMinutes);
     integer(duration, 5, 720, "Legacy service duration");
     const startAt = scheduling.startAt !== undefined && scheduling.startAt !== null
       ? instant(scheduling.startAt, "Legacy start")

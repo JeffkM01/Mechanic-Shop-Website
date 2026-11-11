@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { SERVICE_CATEGORIES, SERVICES, getService, getServiceSelection } from "../../shared/services.js";
+import { SERVICE_CATEGORIES, getService, getServiceSelection } from "../../shared/services.js";
 import { Icon } from "../components/CustomerUI";
 import BookingCalendar from "../components/BookingCalendar";
 import useBookingAvailability from "../hooks/useBookingAvailability";
+import useServiceCatalog from "../hooks/useServiceCatalog";
+import ServiceCatalogStatus from "../components/ServiceCatalogStatus";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
 import { fieldLimits, validateAppointmentFields } from "../utils/appointmentValidation";
 import "../styles/Appointment.css";
@@ -71,7 +73,7 @@ function TimeChoices({ date, data, loading, error, fieldError, selectedTime, onS
 
 function Summary({ request }) {
   return <dl className="booking-summary">
-    <div><dt>Service</dt><dd>{request.service}{getService(request.service)?.provisional && <span className="booking-provisional-small">Provisional · availability to be confirmed</span>}</dd></div>
+    <div><dt>Service</dt><dd>{request.service}{request.provisional && <span className="booking-provisional-small">Provisional · availability to be confirmed</span>}</dd></div>
     <div><dt>Date & time</dt><dd>{formatBookingDate(request.date)}<br />{formatBookingTime(request.time)} · {request.timezone}</dd></div>
     <div><dt>Booking estimate</dt><dd>{request.durationMinutes} minutes<span className="booking-summary-note">Not a guaranteed repair completion time.</span></dd></div>
     <div><dt>Customer</dt><dd>{request.name}<br />{request.email}<br />{request.phone}</dd></div>
@@ -80,7 +82,11 @@ function Summary({ request }) {
   </dl>;
 }
 
-function BookingExperience({ initialService, details, setDetails }) {
+function BookingIntro() {
+  return <header className="booking-intro"><div className="site-container booking-intro-inner"><div><p className="eyebrow">A LITTLE CARE FOR WHAT’S AHEAD</p><h1>Let’s make time<br />for your car.</h1></div><div><p>Choose a service, find an available time, and tell us about your vehicle. A clear next step starts here.</p><span><Icon name="shield" />Secure requests. Personal service.</span></div></div></header>;
+}
+
+function BookingExperience({ initialService, details, setDetails, catalog }) {
   const [selection, setSelection] = useState({ service: initialService, date: "", time: "" });
   const [preview, setPreview] = useState(null);
   const [saved, setSaved] = useState(null);
@@ -103,11 +109,11 @@ function BookingExperience({ initialService, details, setDetails }) {
   const errorSummary = useRef(null);
   const fieldElements = useRef({});
   const touched = useRef(new Set());
-  const availability = useBookingAvailability(selection.service, selection.date);
+  const service = getService(selection.service, catalog.services);
+  const availability = useBookingAvailability(service?.name || "", selection.date);
   const metadata = availability.dayData || availability.calendarData;
-  const service = getService(selection.service);
   const slot = availability.dayData?.slots.find(item => item.time === selection.time);
-  const locked = checking || sending || Boolean(uncertainRequest);
+  const locked = checking || sending || Boolean(uncertainRequest) || !catalog.ready;
   const currentStep = preview ? 4 : slot ? 3 : service ? 2 : 1;
 
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
@@ -120,7 +126,7 @@ function BookingExperience({ initialService, details, setDetails }) {
   }, [focusRequest]);
 
   function validate(values = { ...details, ...selection }) {
-    return validateAppointmentFields(values, new Date(), { schedulingAuthoritative: true });
+    return validateAppointmentFields(values, new Date(), { schedulingAuthoritative: true, serviceCatalog: catalog.services });
   }
   function validateField(name) {
     touched.current.add(name);
@@ -196,6 +202,7 @@ function BookingExperience({ initialService, details, setDetails }) {
   async function review(event) {
     event.preventDefault();
     if (busy.current || uncertainRequest) return;
+    if (!catalog.ready) { setError("Current services must be verified before reviewing a request. Retry services; your details are still here."); return; }
     setError("");
     const errors = validate();
     if (selection.time && !slot) errors.time = "Please select an available appointment time.";
@@ -208,7 +215,7 @@ function BookingExperience({ initialService, details, setDetails }) {
       if (!active.current || token !== version.current || !fresh) return;
       const freshSlot = fresh.slots.find(item => item.time === selection.time);
       if (!freshSlot) { recoverConflict(); return; }
-      setPreview({ ...details, ...selection, timezone: fresh.timezone, durationMinutes: fresh.durationMinutes, startAt: freshSlot.startAt, endAt: freshSlot.endAt });
+      setPreview({ ...details, ...selection, provisional: Boolean(service?.provisional), timezone: fresh.timezone, durationMinutes: fresh.durationMinutes, startAt: freshSlot.startAt, endAt: freshSlot.endAt });
     } catch (failure) {
       if (active.current && token === version.current) setError(readableAvailabilityError(failure.message) || "We could not recheck this time. Please retry availability.");
     } finally { busy.current = false; if (active.current) setChecking(false); }
@@ -216,6 +223,7 @@ function BookingExperience({ initialService, details, setDetails }) {
 
   async function send() {
     if (busy.current || !preview || uncertainRequest) return;
+    if (!catalog.ready) { setError("Current services must be verified before sending a request. Retry services; your details are still here."); return; }
     const errors = validate();
     if (Object.keys(errors).length) { setPreview(null); showValidation(errors); return; }
     const token = version.current;
@@ -268,8 +276,10 @@ function BookingExperience({ initialService, details, setDetails }) {
   }
 
   return <main className="customer-page booking-page">
-    <header className="booking-intro"><div className="site-container booking-intro-inner"><div><p className="eyebrow">A LITTLE CARE FOR WHAT’S AHEAD</p><h1>Let’s make time<br />for your car.</h1></div><div><p>Choose a service, find an available time, and tell us about your vehicle. A clear next step starts here.</p><span><Icon name="shield" />Secure requests. Personal service.</span></div></div></header>
+    <BookingIntro />
     <div className="site-container booking-container">
+      {!saved && <ServiceCatalogStatus catalog={catalog} />}
+      {!saved && catalog.ready && selection.service && !service && <p className="booking-error" role="alert">The selected service is no longer available for new appointments. Choose another service; your contact and vehicle details are still here.</p>}
       {!saved && <ol className="booking-steps" aria-label="Booking steps">{stepLabels.map((label, index) => <li key={label} aria-current={currentStep === index + 1 ? "step" : undefined} className={currentStep > index + 1 ? "is-complete" : ""}><span>{currentStep > index + 1 ? <Icon name="check" /> : `0${index + 1}`}</span>{label}</li>)}</ol>}
       {error && <p className="booking-error" role="alert" tabIndex={-1} ref={errorBox}>{error}</p>}
       {submissionAnnouncement && <p className="booking-sr-only" role="alert">{submissionAnnouncement}</p>}
@@ -301,8 +311,8 @@ function BookingExperience({ initialService, details, setDetails }) {
           <fieldset className="booking-service-panel booking-panel" disabled={locked}>
             <legend className="booking-sr-only">Step 1: Choose a service</legend>
             <div className="booking-panel-heading"><span className="booking-step-number">01</span><div><p className="booking-kicker">START WITH YOUR VEHICLE</p><h2>What can we help with?</h2></div></div>
-            <div className="booking-service-layout"><div className="booking-field"><label htmlFor="booking-service">Service needed</label><select id="booking-service" name="service" value={selection.service} onChange={changeService} onBlur={() => validateField("service")} ref={node => { fieldElements.current.service = node; }} aria-invalid={Boolean(fieldErrors.service) || undefined} aria-describedby={fieldErrors.service ? "booking-service-error" : undefined} required>
-              <option value="">Choose a service</option>{SERVICE_CATEGORIES.map(category => <optgroup label={category.label} key={category.id}>{SERVICES.filter(item => item.category === category.id).map(item => <option value={item.name} key={item.name}>{item.name}{item.provisional ? " (provisional)" : ""}</option>)}</optgroup>)}
+            <div className="booking-service-layout"><div className="booking-field"><label htmlFor="booking-service">Service needed</label><select id="booking-service" name="service" value={service ? selection.service : ""} onChange={changeService} onBlur={() => validateField("service")} ref={node => { fieldElements.current.service = node; }} aria-invalid={Boolean(fieldErrors.service) || undefined} aria-describedby={fieldErrors.service ? "booking-service-error" : undefined} required>
+              <option value="">Choose a service</option>{SERVICE_CATEGORIES.map(category => <optgroup label={category.label} key={category.id}>{catalog.services.filter(item => item.category === category.id).map(item => <option value={item.name} key={item.name}>{item.name}{item.provisional ? " (provisional)" : ""}</option>)}</optgroup>)}
             </select><FieldError name="service" message={fieldErrors.service} /></div><div className="booking-service-hint"><Icon name={service?.icon || "wrench"} /><p>{service?.category === "repairs" ? "Repairs & Diagnostics requests always need mechanic approval." : "Not sure what your car needs? Choose Other / Not Sure and describe what you’ve noticed."}</p></div></div>
             {service?.provisional && <p className="booking-notice"><strong>Provisional service.</strong> {service.name} availability needs Edward’s confirmation before an appointment can be approved.</p>}
           </fieldset>
@@ -331,8 +341,8 @@ function BookingExperience({ initialService, details, setDetails }) {
         {preview && <section className="booking-panel booking-review-panel" aria-labelledby="booking-review-heading">
           <div className="booking-panel-heading"><span className="booking-step-number">04</span><div><p className="booking-kicker">ONE LAST LOOK</p><h2 id="booking-review-heading" tabIndex={-1} ref={reviewHeading}>Review your appointment request.</h2></div></div>
           <p>Nothing has been submitted yet. Check the details below, then send your request when you’re ready.</p><Summary request={preview} />
-          <p className="booking-notice">{getService(preview.service)?.provisional ? "This service is provisional and needs availability confirmation. " : ""}A pending request is not a confirmed appointment. We’ll show the status saved by the shop after you send.</p>
-          <div className="booking-actions"><button type="button" className="button button-secondary" onClick={edit} disabled={sending}>Edit Details</button><button type="button" className="button button-primary" onClick={send} disabled={sending}>{sending ? "Sending your request…" : "Send Appointment Request"}<Icon name="arrow" /></button></div>
+          <p className="booking-notice">{preview.provisional ? "This service is provisional and needs availability confirmation. " : ""}A pending request is not a confirmed appointment. We’ll show the status saved by the shop after you send.</p>
+          <div className="booking-actions"><button type="button" className="button button-secondary" onClick={edit} disabled={sending}>Edit Details</button><button type="button" className="button button-primary" onClick={send} disabled={sending || !catalog.ready}>{sending ? "Sending your request…" : "Send Appointment Request"}<Icon name="arrow" /></button></div>
         </section>}
       </>}
     </div>
@@ -341,9 +351,11 @@ function BookingExperience({ initialService, details, setDetails }) {
 
 export default function Appointment() {
   const { search } = useLocation();
-  const initialService = getServiceSelection(search);
+  const catalog = useServiceCatalog();
+  const initialService = getServiceSelection(search, catalog.services);
   const [details, setDetails] = useState({ ...emptyDetails });
+  if (!catalog.loaded) return <main className="customer-page booking-page"><BookingIntro /><div className="site-container booking-container"><ServiceCatalogStatus catalog={catalog} /></div></main>;
   // Linked service changes reset scheduling/review, while keeping unsent contact
   // details in this parent. No contact information is written to browser storage.
-  return <BookingExperience key={initialService} initialService={initialService} details={details} setDetails={setDetails} />;
+  return <BookingExperience key={search} initialService={initialService} details={details} setDetails={setDetails} catalog={catalog} />;
 }

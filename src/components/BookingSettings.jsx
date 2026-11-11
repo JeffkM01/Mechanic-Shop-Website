@@ -1,5 +1,7 @@
 import { useId, useState } from "react";
-import { SERVICE_CATEGORIES, SERVICES } from "../../shared/services.js";
+import { SERVICE_CATEGORIES, requiresMechanicApproval } from "../../shared/services.js";
+import { getServiceCatalog } from "../../shared/serviceCatalog.js";
+import ServiceCatalogEditor from "./ServiceCatalogEditor";
 
 const policies = [
   { key: "capacity", label: "Simultaneous appointment capacity", min: 1, max: 20, description: "Maximum appointments that can occupy the shop at the same time, including their buffers." },
@@ -19,6 +21,7 @@ export default function BookingSettings({ draft, onChange, disabled }) {
   const id = useId();
   const [confirmAutomation, setConfirmAutomation] = useState(false);
   const verified = draft.businessHoursVerified && draft.capacityVerified;
+  const catalog = getServiceCatalog(draft);
 
   function changeRule(name, patch) {
     onChange({ serviceRules: { ...draft.serviceRules, [name]: { ...draft.serviceRules[name], ...patch } } });
@@ -29,6 +32,7 @@ export default function BookingSettings({ draft, onChange, disabled }) {
   }
 
   return <div className="staff-settings-sections">
+    <ServiceCatalogEditor draft={draft} onChange={onChange} disabled={disabled} />
     <section className="staff-settings-card" aria-labelledby="staff-policy-heading">
       <div className="staff-settings-heading"><p className="staff-kicker">SPACE FOR THE WORK</p><h2 id="staff-policy-heading">Capacity & booking policies</h2><p>These values are loaded from the saved shop configuration. Changes can affect the dates and times customers see.</p></div>
       <p className="staff-settings-warning">Existing held and confirmed appointments remain protected. The server rejects capacity or calendar changes that conflict with reservations.</p>
@@ -47,13 +51,13 @@ export default function BookingSettings({ draft, onChange, disabled }) {
       <p className="staff-settings-note">New availability uses updated estimates. Existing appointments retain their booked duration and buffer snapshots.</p>
       {SERVICE_CATEGORIES.map(category => <fieldset className="staff-service-category" key={category.id} disabled={disabled}>
         <legend>{category.label}</legend>
-        <div className="staff-service-settings">{SERVICES.filter(service => service.category === category.id).map(service => {
+        <div className="staff-service-settings">{catalog.filter(service => service.category === category.id).map(service => {
           const rule = draft.serviceRules[service.name];
-          const manualOnly = category.id === "repairs" || service.provisional;
+          const manualOnly = requiresMechanicApproval(service);
           return <article className="staff-service-rule" key={service.name}>
-            <div className="staff-service-rule-heading"><h3>{service.name}</h3>{service.provisional && <span className="staff-badge staff-badge-provisional">Provisional</span>}</div>
+            <div className="staff-service-rule-heading"><h3>{service.name}</h3>{service.active === false && <span className="staff-badge staff-badge-neutral">Inactive</span>}{service.provisional && <span className="staff-badge staff-badge-provisional">Provisional</span>}</div>
             <label className="staff-field"><span>Estimated duration (minutes)</span><input type="number" aria-label={`${service.name} duration (minutes)`} min="5" max="720" step="1" value={rule.durationMinutes} onChange={event => changeRule(service.name, { durationMinutes: numericValue(event) })} required /><span className="staff-field-help">Booking estimate · 5–720 minutes</span></label>
-            {manualOnly ? <p className="staff-approval-policy"><strong>Mechanic approval required.</strong> {category.id === "repairs" ? "Repairs & Diagnostics always require Edward’s approval." : "Provisional services cannot be automatically confirmed."}</p>
+            {manualOnly ? <p className="staff-approval-policy"><strong>Mechanic approval required.</strong> {category.id === "repairs" ? "Repairs & Diagnostics always require Edward’s approval." : "Edward requires approval for this service. Only Wiper Blade Replacement is eligible for automatic confirmation."}</p>
               : <><label className="staff-check"><input type="checkbox" aria-label={`${service.name} requires mechanic approval`} checked={rule.requiresApproval} onChange={event => changeRule(service.name, { requiresApproval: event.target.checked })} /><span>Require mechanic approval</span></label><p className="staff-field-help">Turning this off only makes the service eligible when automatic booking is explicitly enabled and all other safeguards are satisfied.</p></>}
           </article>;
         })}</div>
@@ -67,14 +71,14 @@ export default function BookingSettings({ draft, onChange, disabled }) {
         <legend className="staff-sr-only">Explicit business verification</legend>
         <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Business hours verified" aria-describedby={`${id}-hours-ack`} checked={draft.businessHoursVerified} onChange={event => onChange({ businessHoursVerified: event.target.checked })} /><span><strong>Business hours verified</strong><span id={`${id}-hours-ack`}>I have personally confirmed that the displayed timezone, weekly hours, and recurring shop-wide breaks reflect the real shop schedule. This is my acknowledgment, not an automatic check.</span></span></label>
         <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Capacity verified" aria-describedby={`${id}-capacity-ack`} checked={draft.capacityVerified} onChange={event => onChange({ capacityVerified: event.target.checked })} /><span><strong>Capacity verified</strong><span id={`${id}-capacity-ack`}>I have personally confirmed that the simultaneous appointment capacity reflects the staff and equipment actually available.</span></span></label>
-        <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Automatic booking enabled" checked={draft.automaticBookingEnabled} disabled={!draft.automaticBookingEnabled && !verified} onChange={event => requestAutomation(event.target.checked)} /><span><strong>Automatic booking enabled</strong><span>Eligible, non-provisional Basic Maintenance services may be confirmed by the backend only after both verification acknowledgments, explicit enablement, an available slot, and the daily automatic limit check.</span></span></label>
+        <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Automatic booking enabled" checked={draft.automaticBookingEnabled} disabled={!draft.automaticBookingEnabled && !verified} onChange={event => requestAutomation(event.target.checked)} /><span><strong>Automatic booking enabled</strong><span>Only eligible Wiper Blade Replacement requests may be confirmed automatically, after both verification acknowledgments, explicit enablement, an available slot, and the daily automatic limit check.</span></span></label>
       </fieldset>
       {!verified && <p className="staff-settings-warning">Automatic booking cannot be enabled until Edward explicitly verifies both the hours and capacity. Requests remain pending whenever either verification is missing.</p>}
       {confirmAutomation && !draft.automaticBookingEnabled && <section className="staff-inline-confirm" role="group" aria-labelledby="staff-enable-automation-heading">
-        <h3 id="staff-enable-automation-heading">Enable automatic booking?</h3><p>After you save, the backend may automatically confirm eligible Basic Maintenance requests against verified hours and capacity. Repairs & Diagnostics and provisional services will still require approval. Daily limits and atomic conflict checks still apply.</p><p>This changes the draft only. Review the configuration and choose Save Changes to apply it.</p>
+        <h3 id="staff-enable-automation-heading">Enable automatic booking?</h3><p>After you save, the backend may automatically confirm eligible Wiper Blade Replacement requests against verified hours and capacity. All other services still require approval. Daily limits and atomic conflict checks still apply.</p><p>This changes the draft only. Review the configuration and choose Save Changes to apply it.</p>
         <div className="staff-inline-actions"><button type="button" className="staff-button staff-button-primary" disabled={disabled || !verified} onClick={() => { onChange({ automaticBookingEnabled: true }); setConfirmAutomation(false); }}>Enable automatic booking</button><button type="button" className="staff-button staff-button-secondary" disabled={disabled} onClick={() => setConfirmAutomation(false)}>Keep automatic booking off</button></div>
       </section>}
-      <p className="staff-settings-note">Repairs & Diagnostics always require mechanic approval. Provisional services cannot become automatic through these controls. The backend alone decides each saved appointment’s status.</p>
+      <p className="staff-settings-note">Oil Change, Cabin Air Filter Replacement, Suspension Repair, and all services other than eligible Wiper Blade Replacement require mechanic approval. The backend alone decides each saved appointment’s status.</p>
     </section>
   </div>;
 }

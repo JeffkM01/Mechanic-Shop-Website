@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { SERVICES } from "../../shared/services.js";
 import {
   fieldLimits, isValidEmailAddress, isValidUsPhone, localDateString, validateAppointment,
   validateAppointmentFields, validateUsPhone,
@@ -25,6 +26,34 @@ const requiredServices = [
   "Engine Diagnostics",
   "Other / Not Sure",
 ];
+
+const customService = {
+  name: "Suspension Repair", category: "repairs", icon: "wrench", description: "Suspension concerns for mechanic review.",
+  active: true, provisional: false, appointmentOnly: false, legacyNames: [],
+};
+
+test("customer validation accepts only services in the current active catalog", () => {
+  const serviceCatalog = [...structuredClone(SERVICES), customService];
+  assert.deepEqual(validateAppointmentFields({ ...request, service: customService.name }, now, { serviceCatalog }), {});
+  assert.equal(validateAppointmentFields({ ...request, service: customService.name }, now).service, "Please select a valid service.");
+  const inactive = serviceCatalog.map(service => service.name === "Oil Change" ? { ...service, active: false } : service);
+  assert.equal(validateAppointmentFields({ ...request, service: "Oil Change" }, now, { serviceCatalog: inactive }).service, "Please select a valid service.");
+});
+
+test("dynamic catalog validation preserves accepted historical names without silently rewriting requests", () => {
+  const legacy = { ...request, service: "Air Filter Change" };
+  assert.deepEqual(validateAppointmentFields(legacy, now, { serviceCatalog: structuredClone(SERVICES) }), {});
+  assert.equal(legacy.service, "Air Filter Change");
+});
+
+test("server-deferred catalog membership still enforces required strings and bounded fields", () => {
+  const options = { schedulingAuthoritative: true, serviceCatalog: [], deferServiceValidation: true };
+  assert.deepEqual(validateAppointmentFields({ ...request, service: customService.name }, now, options), {});
+  for (const service of [null, {}, "", "a".repeat(fieldLimits.service + 1)]) {
+    assert.ok(validateAppointmentFields({ ...request, service }, now, options).service);
+  }
+  assert.ok(validateAppointmentFields({ ...request, email: "bad address", service: customService.name }, now, options).email);
+});
 
 test("formats local dates without a UTC offset", () => {
   assert.equal(localDateString(now), "2026-11-03");

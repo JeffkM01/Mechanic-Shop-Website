@@ -1,0 +1,9 @@
+.service-catalog-status { margin-block: 24px; padding: 20px 24px; border: 1px solid var(--line); border-left: 3px solid #667d8c; border-radius: 5px; background: #fff; color: var(--ink); font-size: var(--text-base); line-height: 1.7; overflow-wrap: anywhere; }
+.service-catalog-status p { margin: 0 0 16px; }
+.service-catalog-status > div { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.service-catalog-error { border-left-color: #b44d2c; background: #fff6f0; }
+@media (max-width: 600px) {
+  .service-catalog-status { padding: 18px; }
+  .service-catalog-status > div { align-items: stretch; flex-direction: column; }
+  .service-catalog-status .text-link { justify-content: center; }
+}

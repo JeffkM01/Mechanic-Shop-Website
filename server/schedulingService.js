@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { randomUUID } from "node:crypto";
-import { SERVICES, getService } from "../shared/services.js";
+import { getService, requiresMechanicApproval } from "../shared/services.js";
+import { getServiceCatalog, validateServiceCatalog } from "../shared/serviceCatalog.js";
 import { validateDeclineReason } from "../shared/declineReasons.js";
 import { validateCancellation } from "../shared/cancellations.js";
 import { shopTimezoneFormatter } from "../shared/shopTime.js";
@@ -22,13 +23,22 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         }
         continue;
       }
-      // Previous PR revisions seeded Engine Diagnostics as auto-eligible.
-      // Repair stored policy under the same CAS as bookings/settings so old
-      // defaults neither enable diagnostics automation nor prevent future edits.
-      const corrections = Object.fromEntries(SERVICES
-        .filter(service => service.category === "repairs" && state.settings?.serviceRules?.[service.name]
+      // Catalog and policy normalization share the booking/settings CAS. Seed
+      // once, retain saved estimates and verification, and never enable global
+      // automation. Existing appointment strings/snapshots remain untouched.
+      let catalog;
+      try { catalog = validateServiceCatalog(getServiceCatalog(state.settings)); }
+      catch {
+        // Never use unverified stored names as Mongo dotted update paths.
+        // A malformed saved catalog must fail closed instead of reseeding or
+        // silently dropping historical definitions.
+        throw new SchedulingError(503, "The saved service catalog needs mechanic review.", "INVALID_STORED_SERVICE_CATALOG");
+      }
+      const corrections = Object.fromEntries(catalog
+        .filter(service => requiresMechanicApproval(service) && state.settings?.serviceRules?.[service.name]
           && state.settings.serviceRules[service.name].requiresApproval !== true)
         .map(service => [`settings.serviceRules.${service.name}.requiresApproval`, true]));
+      if (state.settings?.serviceCatalog === undefined) corrections["settings.serviceCatalog"] = catalog.map(service => ({ ...service, legacyNames: [...service.legacyNames] }));
       if (!Object.keys(corrections).length) return state;
       await SchedulingState.updateOne({ _id: "shop", revision: state.revision }, {
         $set: corrections,
@@ -118,8 +128,8 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
 
   const automaticEligible = (settings, service) => settings.automaticBookingEnabled
     && settings.businessHoursVerified && settings.capacityVerified
-    && service.category === "maintenance"
-    && !service.provisional && !settings.serviceRules[service.name].requiresApproval;
+    && service?.active !== false && !requiresMechanicApproval(service)
+    && !settings.serviceRules[service.name].requiresApproval;
 
   function reservationFor(id, candidate, state, clock, confirmed = false, source) {
     return {
@@ -140,6 +150,20 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
   async function getSettings() {
     const state = await readState();
     return { revision: state.settingsRevision, settings: state.settings };
+  }
+
+  async function getPublicServices() {
+    const state = await readState();
+    return {
+      revision: state.settingsRevision,
+      // Only public catalog metadata is returned. No block reasons, staffing,
+      // appointment/customer details, or management credentials are included.
+      services: getServiceCatalog(state.settings).filter(service => service.active !== false).map(service => ({
+        name: service.name, category: service.category, icon: service.icon, description: service.description,
+        active: true, provisional: service.provisional, appointmentOnly: service.appointmentOnly,
+        legacyNames: [...service.legacyNames],
+      })),
+    };
   }
 
   async function updateSettings(patch, { expectedRevision } = {}) {
@@ -189,7 +213,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     const candidates = calculateSlots(state.settings, service, date, [], clock);
     const current = candidates.length ? await context(state, clock) : { occupancies: [] };
     const slots = candidates.filter(slot => canFit({ ...slot, bufferMinutes: state.settings.bufferMinutes }, current.occupancies, state.settings.capacity));
-    const definition = getService(service);
+    const definition = getService(service, getServiceCatalog(state.settings));
     return {
       date,
       ...publicAvailabilityMetadata(state.settings, definition),
@@ -218,13 +242,13 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
   }
 
   async function getCalendarAvailability(service, requestedMonth) {
-    const definition = getService(service);
-    if (!definition) throw new SchedulingError(400, "Choose a listed service.", "INVALID_SCHEDULING_INPUT");
     if (requestedMonth !== undefined && (typeof requestedMonth !== "string"
       || !/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth))) {
       throw new SchedulingError(400, "Month must use YYYY-MM.", "INVALID_MONTH");
     }
     const state = await readState();
+    const definition = getService(service, getServiceCatalog(state.settings));
+    if (!definition || definition.active === false) throw new SchedulingError(400, "Choose an available listed service.", definition ? "SERVICE_UNAVAILABLE" : "INVALID_SERVICE");
     const clock = new Date(now());
     const today = dateInZone(clock, state.settings.timezone);
     // These are calendar dates, not elapsed shop-local days: advancing UTC
@@ -265,7 +289,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       const reservation = reservationFor(id, candidate, state, clock);
       return {
         next: { reservations: [...current.reservations, reservation] },
-        result: { reservation, clock, attemptAutomatic: automaticEligible(state.settings, getService(value.service)) },
+        result: { reservation, clock, attemptAutomatic: automaticEligible(state.settings, getService(value.service, getServiceCatalog(state.settings))) },
       };
     });
     // Reserve first. A crash/ambiguous insert failure can over-block until hold
@@ -402,7 +426,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     const appointment = await Appointment.findById(id).lean();
     if (!appointment || (appointment.status && appointment.status !== "pending")) throw new SchedulingError(409, "This request was already reviewed or no longer exists.");
     const confirmed = await commit((state, clock, current) => {
-      const definition = getService(appointment.service);
+      const definition = getService(appointment.service, getServiceCatalog(state.settings));
       if (automatic && (!definition || !automaticEligible(state.settings, definition))) throw new SchedulingError(409, "This request requires mechanic approval.", "MANUAL_APPROVAL_REQUIRED");
       if ((appointment.scheduling?.timezone || "America/Chicago") !== state.settings.timezone) throw new SchedulingError(409, "Scheduling conflict: the shop timezone has changed. This request remains pending. Contact the customer to review the appointment time; no replacement time has been offered.", "TIMEZONE_CHANGED");
       // Resolve original snapshots even after their provisional hold expired.
@@ -488,5 +512,5 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return { removed: true };
   }
 
-  return { getSettings, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
+  return { getSettings, getPublicServices, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
 }

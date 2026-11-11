@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
-import { SERVICE_CATEGORIES, SERVICES, getAppointmentLink } from "../../shared/services.js";
+import { SERVICE_CATEGORIES, getAppointmentLink } from "../../shared/services.js";
 import { BookingBanner, Icon, PageHero } from "../components/CustomerUI";
+import ServiceCatalogStatus from "../components/ServiceCatalogStatus";
+import useServiceCatalog from "../hooks/useServiceCatalog";
 import "../styles/Services.css";
 
 function sectionId(category) {
@@ -8,6 +10,7 @@ function sectionId(category) {
 }
 
 export default function Services() {
+  const catalog = useServiceCatalog();
   return (
     <main className="customer-page services-page">
       <PageHero
@@ -28,9 +31,11 @@ export default function Services() {
           <Icon name="chat" />
           <div>
             <h2 id="services-availability-heading">A note on availability.</h2>
-            <p>New maintenance options marked provisional are awaiting availability confirmation. You can request them for review; they are not yet confirmed offerings. All appointments require the mechanic’s approval.</p>
+            <p>Services marked provisional are awaiting availability confirmation. Repairs and diagnostics require mechanic review. Check your appointment’s saved status before visiting.</p>
           </div>
         </aside>
+
+        <ServiceCatalogStatus catalog={catalog} />
 
         {SERVICE_CATEGORIES.map((category, categoryIndex) => (
           <section className="services-section" tabIndex={-1} id={sectionId(category)} key={category.id} aria-labelledby={`${category.id}-heading`}>
@@ -39,7 +44,7 @@ export default function Services() {
               <p>{category.description}</p>
             </div>
             <div className="services-grid">
-              {SERVICES.filter(service => service.category === category.id && !service.appointmentOnly).map((service, index) => (
+              {catalog.services.filter(service => service.category === category.id && !service.appointmentOnly).map((service, index) => (
                 <article className="services-detail-card" key={service.name}>
                   <div className="services-card-top">
                     <span className="services-icon-box"><Icon name={service.icon} /></span>
@@ -48,7 +53,7 @@ export default function Services() {
                   {service.provisional && <p className="services-provisional">Provisional · confirm availability</p>}
                   <h3>{service.name}</h3>
                   <p className="services-description">{service.description}</p>
-                  <Link className="services-book-link" to={getAppointmentLink(service.name)} aria-label={`Request an appointment for ${service.name}`}>
+                  <Link className="services-book-link" to={getAppointmentLink(service.name, catalog.services)} aria-label={`Request an appointment for ${service.name}`}>
                     Request this service <Icon name="arrow" />
                   </Link>
                 </article>

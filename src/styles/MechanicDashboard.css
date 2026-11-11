@@ -129,6 +129,23 @@
 .staff-service-category > legend { font-size: var(--text-label); font-weight: 750; padding: 0 0 15px; }
 .staff-service-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
 .staff-service-rule { min-width: 0; padding: 20px; border: 1px solid #dce3e6; border-radius: 5px; }
+.staff-service-catalog { list-style: none; margin: 24px 0 0; padding: 0; display: grid; gap: 16px; }
+.staff-service-catalog-item { min-width: 0; padding: 20px; border: 1px solid #dce3e6; border-radius: 5px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.staff-service-catalog-item > div { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.staff-service-catalog-item h3 { font-size: 1.25rem; margin-bottom: 10px; }
+.staff-service-catalog-item p { font-size: var(--text-base); margin-bottom: 12px; color: var(--muted); }
+.staff-service-catalog-item .staff-badge { margin: 0 8px 8px 0; }
+.staff-service-catalog-item > button { flex-shrink: 0; max-width: 45%; overflow-wrap: anywhere; }
+.staff-service-add { padding-top: 28px; margin-top: 28px; border-top: 1px solid #dce3e6; }
+.staff-service-add > h3 { margin-bottom: 14px; font-size: 1.5rem; }
+.staff-service-add-fields { border: 0; padding: 0; margin: 22px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; min-width: 0; }
+.staff-service-add-fields > button { justify-self: start; }
+.staff-service-add-fields textarea { width: 100%; min-height: 120px; padding: 12px; border: 1px solid #a7b7c1; border-radius: 4px; font: inherit; font-size: var(--text-base); line-height: 1.6; resize: vertical; }
+@media (max-width: 700px) {
+  .staff-service-catalog-item { flex-direction: column; padding: 18px; }
+  .staff-service-catalog-item > button { max-width: 100%; width: 100%; }
+  .staff-service-add-fields { grid-template-columns: 1fr; gap: 20px; }
+}
 .staff-service-rule-heading { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 18px; }
 .staff-service-rule-heading h3 { font-size: 1.125rem; flex: 1; min-width: 160px; }
 .staff-service-rule .staff-badge { font-size: var(--text-small); }

@@ -10,7 +10,7 @@ const values = [
 
 const steps = [
   { title: "Tell us what's going on", text: "Share your vehicle details, the service you need, or the symptoms you've noticed." },
-  { title: "Find a time that works", text: "Request an appointment online. The shop reviews your preferred date and time before confirming." },
+  { title: "Find a time that works", text: "Request an appointment online, then check whether it is confirmed or awaiting mechanic review." },
   { title: "Understand the next step", text: "Talk through your concerns and the proposed work so you can make an informed decision." },
 ];
 

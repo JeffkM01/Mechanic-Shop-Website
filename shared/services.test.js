@@ -13,8 +13,9 @@ test("catalog separates five maintenance and three public repair services", () =
   assert.equal(new Set(ACCEPTED_SERVICE_NAMES).size, ACCEPTED_SERVICE_NAMES.length);
 });
 
-test("only newly suggested offerings are explicitly provisional", () => {
-  assert.deepEqual(SERVICES.filter(service => service.provisional).map(service => service.name), ["Tire Rotation", "Cabin Air Filter Replacement", "Wiper Blade Replacement"]);
+test("unconfirmed suggestions stay provisional while Edward's confirmed wiper service is available", () => {
+  assert.deepEqual(SERVICES.filter(service => service.provisional).map(service => service.name), ["Tire Rotation", "Cabin Air Filter Replacement"]);
+  assert.equal(getService("Wiper Blade Replacement").provisional, false);
   assert.equal(getService("Air Filter Change").name, "Engine Air Filter Replacement");
   assert.equal(isValidServiceName("Air Filter Change"), true);
 });

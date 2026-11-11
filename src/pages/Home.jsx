@@ -1,20 +1,29 @@
 import { Link } from "react-router-dom";
 import { getService, getAppointmentLink } from "../../shared/services.js";
 import { BookingBanner, Icon } from "../components/CustomerUI";
+import ServiceCatalogStatus from "../components/ServiceCatalogStatus";
+import useServiceCatalog from "../hooks/useServiceCatalog";
 import "../styles/Home.css";
 
-const featured = [
-  { service: getService("Oil Change"), tag: "EVERYDAY MAINTENANCE" },
-  { service: getService("Brake Repairs"), tag: "STOP WITH CONFIDENCE" },
-  { service: getService("Engine Diagnostics"), tag: "GET A CLEARER PICTURE" },
+const featuredChoices = [
+  { name: "Oil Change", tag: "EVERYDAY MAINTENANCE" },
+  { name: "Brake Repairs", tag: "STOP WITH CONFIDENCE" },
+  { name: "Engine Diagnostics", tag: "GET A CLEARER PICTURE" },
 ];
 const reasons = [
   { icon: "chat", title: "Real conversations.", text: "Tell us what you’re noticing. We’ll listen, explain the options, and keep you in the loop." },
   { icon: "wrench", title: "Care with a purpose.", text: "From everyday maintenance to an unexpected repair, the focus stays on what your vehicle needs." },
-  { icon: "calendar", title: "A clear next step.", text: "Request a time that works for you. Your mechanic will review it and confirm your appointment." },
+  { icon: "calendar", title: "A clear next step.", text: "Request a time that works for you and check your appointment’s saved status before your visit." },
 ];
 
 export default function Home() {
+  const catalog = useServiceCatalog();
+  const eligible = catalog.services.filter(service => !service.appointmentOnly && !service.provisional);
+  const featured = featuredChoices.map(choice => ({ ...choice, service: getService(choice.name, eligible) })).filter(choice => choice.service);
+  for (const service of eligible) {
+    if (featured.length >= 3) break;
+    if (!featured.some(choice => choice.service.name === service.name)) featured.push({ service, tag: service.category === "maintenance" ? "BASIC MAINTENANCE" : "REPAIRS & DIAGNOSTICS" });
+  }
   return (
     <main className="customer-page home-page">
       <section className="home-hero">
@@ -38,11 +47,12 @@ export default function Home() {
       <section className="section-pad home-services" aria-labelledby="home-services-title">
         <div className="site-container">
           <div className="section-heading"><div><p className="eyebrow">WHAT WE DO</p><h2 id="home-services-title">Everyday care.<br />When you need it.</h2></div><div><p>From the routine to the unexpected,<br className="desktop-break" /> find the right place to start.</p><Link className="text-link" to="/services">Explore our service categories <Icon name="arrow" /></Link></div></div>
+          <ServiceCatalogStatus catalog={catalog} />
           <div className="home-service-grid">{featured.map(({ service, tag }, index) => (
             <article className="home-service-card" key={service.name}>
               <div className="home-card-top"><Icon name={service.icon} /><span>0{index + 1}</span></div>
               <p className="home-card-tag">{tag}</p><h3>{service.name}</h3><p>{service.description}</p>
-              <Link className="text-link" to={getAppointmentLink(service.name)}>Request {service.name.toLowerCase()} <Icon name="arrow" /></Link>
+              <Link className="text-link" to={getAppointmentLink(service.name, catalog.services)}>Request {service.name.toLowerCase()} <Icon name="arrow" /></Link>
             </article>
           ))}</div>
           <div className="home-more-services"><span>Explore <Link to="/services#basic-maintenance">basic maintenance</Link> and <Link to="/services#repairs-diagnostics">repairs & diagnostics</Link>.</span><Icon name="car" /></div>
@@ -58,7 +68,7 @@ export default function Home() {
 
       <section className="home-steps section-pad" aria-labelledby="home-steps-title">
         <div className="site-container"><div className="section-heading"><div><p className="eyebrow">FROM HERE TO YOUR NEXT VISIT</p><h2 id="home-steps-title">A little less guesswork.</h2></div><Link className="text-link" to="/appointment">Start your request <Icon name="arrow" /></Link></div>
-          <ol className="home-step-grid"><li><span>01 /</span><h3>Tell us about your car.</h3><p>Choose a service, describe what you’re noticing, and share a preferred time.</p></li><li><span>02 /</span><h3>We review your request.</h3><p>Your request starts as pending. The mechanic will confirm or decline the time.</p></li><li><span>03 /</span><h3>Plan your next step.</h3><p>Wait for confirmation before visiting. Have a question? Check our contact page.</p></li></ol>
+          <ol className="home-step-grid"><li><span>01 /</span><h3>Tell us about your car.</h3><p>Choose a service, describe what you’re noticing, and share a preferred time.</p></li><li><span>02 /</span><h3>Check your appointment status.</h3><p>We’ll show whether your appointment is confirmed or awaiting mechanic review.</p></li><li><span>03 /</span><h3>Plan your next step.</h3><p>Wait for confirmation before visiting. Have a question? Check our contact page.</p></li></ol>
         </div>
       </section>
       <BookingBanner />

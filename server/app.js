@@ -19,6 +19,12 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     res.status(connected ? 200 : 503).json({ database: connected ? "connected" : "disconnected" });
   });
 
+  app.get("/api/services", async (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    try { res.json(await scheduling.getPublicServices()); }
+    catch (error) { next(error); }
+  });
+
   app.get("/api/availability", async (req, res, next) => {
     res.set("Cache-Control", "no-store");
     if (typeof req.query.service !== "string" || typeof req.query.date !== "string") return res.status(400).json({ error: "Provide one service and date (YYYY-MM-DD)." });
@@ -38,7 +44,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
   app.post("/api/appointments", async (req, res, next) => {
     // Date/time syntax is checked here; the shop's persisted timezone, hours,
     // notice and capacity rules are applied atomically by scheduling below.
-    const { error, fields, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true });
+    const { error, fields, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true, deferServiceValidation: true });
     if (error) return res.status(400).json({ error, ...(fields ? { fields } : {}) });
     try {
       const appointment = await scheduling.createAppointment(value);
