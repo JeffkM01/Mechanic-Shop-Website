@@ -10,6 +10,8 @@ import Contact from "./pages/Contact";
 import MechanicDashboard from "./pages/MechanicDashboard";
 import ManageAppointment from "./pages/ManageAppointment";
 import ServiceCatalogProvider from "./components/ServiceCatalogProvider";
+import Privacy from "./pages/Privacy";
+import CancellationPolicy from "./pages/CancellationPolicy";
 
 function App() {
   return (
@@ -26,6 +28,8 @@ function App() {
           <Route path="/appointment" element={<Appointment />} />
           <Route path="/mechanic" element={<MechanicDashboard />} />
           <Route path="/manage-appointment" element={<ManageAppointment />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/cancellation-policy" element={<CancellationPolicy />} />
         </Routes>
       </div>
       <Footer />
