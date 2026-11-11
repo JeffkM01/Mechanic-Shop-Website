@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { test, expect, CUSTOMER } from "./mechanic-fixture.js";
-import { SERVICES } from "../shared/services.js";
+import { SERVICES, requiresMechanicApproval } from "../shared/services.js";
 import { formatBookingDate, formatBookingTime } from "../src/utils/bookingDates.js";
 
 // Deliberately use a non-US locale and a customer timezone far from Chicago.
@@ -268,7 +268,7 @@ test("requires explicit verification and automatic-booking confirmation without 
   await expect(capacity).not.toBeChecked();
   await expect(automatic).not.toBeChecked();
   await expect(automatic).toBeDisabled();
-  for (const service of SERVICES.filter(item => item.category === "repairs" || item.provisional)) {
+  for (const service of SERVICES.filter(requiresMechanicApproval)) {
     await expect(page.getByLabel(`${service.name} requires mechanic approval`, { exact: true })).toHaveCount(0);
   }
   await hours.check();

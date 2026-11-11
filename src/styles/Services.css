@@ -7,12 +7,14 @@
 .services-category-nav a .icon { width: 17px; height: 17px; transform: rotate(90deg); color: #a8461c; }
 .services-availability { display: flex; align-items: flex-start; gap: 18px; padding: 24px 28px; margin-top: 32px; border: 1px solid #f0d6c3; border-left: 3px solid var(--orange); background: #fff7f0; border-radius: 4px; }
 .services-availability > .icon { color: #a8461c; margin-top: 3px; }
+.services-availability > div { flex: 1; min-width: 0; }
 .services-availability h2 { font-size: 1.5rem; letter-spacing: -0.025em; margin-bottom: 9px; }
 .services-availability p { max-width: 970px; color: #695043; font-size: var(--text-notice); line-height: 1.75; margin: 0; }
 .services-section { padding-top: 64px; scroll-margin-top: 24px; }
 .services-section + .services-section { margin-top: 24px; padding-top: 64px; border-top: 1px solid var(--line); }
 .services-section-intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 48px; margin-bottom: 32px; }
-.services-section-intro h2 { font-size: clamp(2rem, 3.6vw, 3rem); }
+.services-section-intro > div { min-width: 0; max-width: 100%; }
+.services-section-intro h2 { font-size: clamp(2rem, 3.6vw, 3rem); overflow-wrap: anywhere; }
 .services-section-intro > p { max-width: 440px; margin: 0; color: #5e6a73; font-size: var(--text-body); line-height: 1.75; }
 .services-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 20px; }
 .services-detail-card { display: flex; flex-direction: column; grid-column: span 2; padding: 28px; border: 1px solid #dde3e6; border-radius: 8px; background: #fff; }
@@ -33,7 +35,8 @@
 .services-help-icon svg { width: 32px; height: 32px; }
 .services-help h2 { margin: 0 0 7px; color: #101f2c; font-size: 1.5rem; letter-spacing: -0.02em; }
 .services-help p { max-width: 590px; margin: 0; color: #5e6a73; font-size: var(--text-body); line-height: 1.75; }
-.services-help > .text-link { flex-shrink: 0; margin-left: auto; font-size: var(--text-button); }
+.services-help > div { min-width: 0; max-width: 100%; }
+.services-help > .text-link { flex-shrink: 1; min-width: 0; max-width: 100%; margin-left: auto; font-size: var(--text-button); overflow-wrap: anywhere; }
 @media (max-width: 1000px) {
   .services-category-nav { align-items: flex-start; flex-direction: column; gap: 14px; }
   .services-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

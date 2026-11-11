@@ -1,4 +1,4 @@
-import { isValidServiceName } from "./services.js";
+import { SERVICES, isValidServiceName } from "./services.js";
 
 export const fieldLimits = Object.freeze({
   name: 80, email: 254, phone: 24, vehicle: 120,
@@ -79,7 +79,7 @@ function validCalendarDate(value) {
 }
 
 /** Return every invalid booking field without changing customer-entered data. */
-export function validateAppointmentFields(form, now = new Date(), { schedulingAuthoritative = false } = {}) {
+export function validateAppointmentFields(form, now = new Date(), { schedulingAuthoritative = false, serviceCatalog = SERVICES, deferServiceValidation = false } = {}) {
   const errors = {};
   const values = {};
   for (const [field, maximum] of Object.entries(fieldLimits)) {
@@ -96,7 +96,7 @@ export function validateAppointmentFields(form, now = new Date(), { schedulingAu
     if (values[field].length > maximum) errors[field] = `${labels[field]} must be ${maximum} characters or fewer.`;
   }
 
-  if (!errors.service && !isValidServiceName(values.service)) errors.service = "Please select a valid service.";
+  if (!errors.service && !deferServiceValidation && !isValidServiceName(values.service, serviceCatalog)) errors.service = "Please select a valid service.";
   if (!errors.email && !isValidEmailAddress(form.email)) errors.email = "Please enter a valid email address.";
   if (!errors.phone) {
     const message = validateUsPhone(form.phone);

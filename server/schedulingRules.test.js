@@ -36,15 +36,15 @@ test("settings updates merge individual days and service rules without changing 
   });
   assert.equal(settings.weeklyHours[1][0].start, "08:00");
   assert.equal(settings.weeklyHours[6][0].start, "09:00");
-  assert.deepEqual(settings.serviceRules["Oil Change"], { durationMinutes: 90, requiresApproval: false });
+  assert.deepEqual(settings.serviceRules["Oil Change"], { durationMinutes: 90, requiresApproval: true });
   assert.equal(settings.blockedPeriods[0].startAt, "2026-11-09T15:00:00.000Z");
 });
 
-test("every Repairs & Diagnostics service requires approval in defaults and settings updates", () => {
-  for (const { name, category } of SERVICES) {
+test("only Wiper Blade Replacement can opt out of mechanic approval in defaults and settings updates", () => {
+  for (const { name } of SERVICES) {
     const settings = defaultSettings();
-    assert.equal(settings.serviceRules[name].requiresApproval, category === "repairs", name);
-    if (category === "repairs") {
+    assert.equal(settings.serviceRules[name].requiresApproval, name !== "Wiper Blade Replacement", name);
+    if (name !== "Wiper Blade Replacement") {
       settings.serviceRules[name].requiresApproval = false;
       assert.throws(() => validateSettings(settings), /requires mechanic approval/, name);
       assert.throws(() => mergeSettings(defaultSettings(), {
@@ -116,7 +116,8 @@ test("candidate snapshots canonical and legacy service durations with conservati
   assert.equal(candidate.startAt.toISOString(), "2026-11-09T14:00:00.000Z");
   assert.equal(candidate.endAt.toISOString(), "2026-11-09T15:00:00.000Z");
   assert.equal(candidate.occupiedUntil.toISOString(), "2026-11-09T15:15:00.000Z");
-  assert.equal(candidate.requiresApproval, false);
+  assert.equal(candidate.requiresApproval, true);
+  assert.equal(buildCandidate(settings, "Wiper Blade Replacement", MONDAY, "08:00", NOW).requiresApproval, false);
   assert.equal(candidate.timezone, "America/Chicago");
   const legacy = buildCandidate(settings, "Air Filter Change", MONDAY, "08:00", NOW);
   assert.equal(legacy.durationMinutes, 30);

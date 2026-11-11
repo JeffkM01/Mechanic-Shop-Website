@@ -74,6 +74,7 @@ function dayData(service, date, times = ["08:00", "14:30"], overrides = {}) {
 
 async function mockScheduling(page, overrides = {}) {
   const state = { calendar: [], days: [], posts: [], order: [], active: 0, maxActive: 0 };
+  await page.route("**/api/services", route => route.fulfill({ status: 200, json: { revision: 0, services: SERVICES } }));
   const pending = new Set();
   function finish(request) {
     pending.delete(request);

@@ -483,6 +483,7 @@ test("automatic confirmation requires explicit verified settings and excludes pr
   await scheduling.updateSettings({ businessHoursVerified: true, capacityVerified: true });
   assert.equal((await scheduling.createAppointment(request({ service: "Tire Rotation", time: "13:00" }))).status, "pending");
   assert.equal((await scheduling.createAppointment(request({ service: "Brake Repairs", date: "2026-11-12" }))).status, "pending");
+  assert.equal((await scheduling.createAppointment(request({ service: "Wiper Blade Replacement", time: "15:00" }))).status, "confirmed");
 });
 
 test("every Repairs & Diagnostics service requires approval even with verified automatic booking enabled", async (t) => {
@@ -495,8 +496,8 @@ test("every Repairs & Diagnostics service requires approval even with verified a
       (error) => conflict(error) && error.code === "MANUAL_APPROVAL_REQUIRED");
     await scheduling.reviewAppointment(appointment.id, "declined", { decline: validDecline });
   }
-  assert.equal((await scheduling.createAppointment(request({ time: "13:00" }))).status, "confirmed",
-    "verified basic maintenance remains eligible for explicitly enabled automatic booking");
+  assert.equal((await scheduling.createAppointment(request({ service: "Wiper Blade Replacement", time: "13:00" }))).status, "confirmed",
+    "verified wiper replacement remains eligible for explicitly enabled automatic booking");
 });
 
 test("the authenticated settings API cannot disable approval for any repair or diagnostics service", async (t) => {
@@ -555,7 +556,7 @@ test("automatic bookings queue one customer confirmation and one mechanic notice
       const { scheduling, Appointment } = await fixture(t);
       const { notifications, sent, errors, mechanicEmail } = await notificationQueue(Appointment);
       await scheduling.updateSettings({ automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true });
-      const appointment = await scheduling.createAppointment(request());
+      const appointment = await scheduling.createAppointment(request({ service: "Wiper Blade Replacement" }));
       assert.equal(appointment.status, "confirmed");
       assert.equal(appointment.notificationState.requestCustomer, "suppressed");
       assert.equal(appointment.notificationState.decisionCustomer, "pending");
@@ -592,7 +593,7 @@ test("automatic approval preserves a request receipt sent before approval and se
   };
   let appointment;
   try {
-    appointment = await scheduling.createAppointment(request());
+    appointment = await scheduling.createAppointment(request({ service: "Wiper Blade Replacement" }));
   } finally {
     Appointment.prototype.save = originalSave;
   }
@@ -635,7 +636,7 @@ test("concurrent automatic confirmations enforce the daily limit and leave addit
   const { scheduling, otherScheduling } = await fixture(t);
   await scheduling.updateSettings({ automaticBookingEnabled: true, businessHoursVerified: true, capacityVerified: true });
   const appointments = await Promise.all(["08:00", "09:30", "13:00", "14:30"].map((time, index) =>
-    (index % 2 ? scheduling : otherScheduling).createAppointment(request({ time }))));
+    (index % 2 ? scheduling : otherScheduling).createAppointment(request({ service: "Wiper Blade Replacement", time }))));
   assert.equal(appointments.filter((appointment) => appointment.status === "confirmed").length, 3);
   assert.equal(appointments.filter((appointment) => appointment.status === "pending").length, 1);
 });

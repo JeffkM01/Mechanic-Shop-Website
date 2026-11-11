@@ -1,4 +1,5 @@
-import { SERVICES } from "../../shared/services.js";
+import { requiresMechanicApproval } from "../../shared/services.js";
+import { getServiceCatalog, validateServiceCatalog } from "../../shared/serviceCatalog.js";
 import { formatBookingDate, formatBookingTime, isBookingDate } from "./bookingDates.js";
 
 const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -22,12 +23,25 @@ const numericLimits = {
   bookingHorizonDays: [1, 365], startIncrementMinutes: [5, 120], bufferMinutes: [0, 120],
   pendingHoldHours: [1, 168], legacyUnknownDurationMinutes: [5, 720],
 };
-const allowedKeys = [...Object.keys(fields), "weeklyHours", "serviceRules", "blockedPeriods", "legacyUnknownDurationMinutes"];
-const same = (first, second) => JSON.stringify(first) === JSON.stringify(second);
+const allowedKeys = [...Object.keys(fields), "weeklyHours", "serviceRules", "blockedPeriods", "legacyUnknownDurationMinutes", "serviceCatalog"];
 const copy = (value) => structuredClone(value);
 const object = (value) => value !== null && typeof value === "object"
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const hasOnly = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
+
+// API validation can normalize object field order. Compare values rather than
+// serialization order so a reload does not manufacture catalog edits/conflicts.
+function same(first, second) {
+  if (Object.is(first, second)) return true;
+  if (Array.isArray(first) || Array.isArray(second)) {
+    return Array.isArray(first) && Array.isArray(second) && first.length === second.length
+      && first.every((value, index) => same(value, second[index]));
+  }
+  if (!object(first) || !object(second)) return false;
+  const keys = Object.keys(first);
+  return keys.length === Object.keys(second).length
+    && keys.every(key => Object.hasOwn(second, key) && same(first[key], second[key]));
+}
 
 function leafChanges(saved, draft) {
   const changes = [];
@@ -36,9 +50,15 @@ function leafChanges(saved, draft) {
   }
   for (const [key, label] of Object.entries(fields)) add(key, label, saved?.[key], draft?.[key]);
   weekdays.forEach((day, index) => add(`weeklyHours.${index}`, `${day} business hours`, saved?.weeklyHours?.[index], draft?.weeklyHours?.[index]));
-  for (const service of SERVICES) {
+  const beforeCatalog = getServiceCatalog(saved);
+  const afterCatalog = getServiceCatalog(draft);
+  const names = [...new Set([...beforeCatalog, ...afterCatalog].map(service => service.name))];
+  for (const name of names) {
+    add(`serviceCatalog.${name}`, `${name}: service listing`, beforeCatalog.find(service => service.name === name), afterCatalog.find(service => service.name === name));
+  }
+  for (const name of names) {
     for (const key of ["durationMinutes", "requiresApproval"]) {
-      add(`serviceRules.${service.name}.${key}`, `${service.name}: ${key === "durationMinutes" ? "booking estimate" : "mechanic approval"}`, saved?.serviceRules?.[service.name]?.[key], draft?.serviceRules?.[service.name]?.[key]);
+      add(`serviceRules.${name}.${key}`, `${name}: ${key === "durationMinutes" ? "booking estimate" : "mechanic approval"}`, saved?.serviceRules?.[name]?.[key], draft?.serviceRules?.[name]?.[key]);
     }
   }
   return changes;
@@ -46,6 +66,10 @@ function leafChanges(saved, draft) {
 
 function display(path, value) {
   if (value === undefined || value === null) return "Not set";
+  if (path.startsWith("serviceCatalog.")) {
+    const category = value.category === "maintenance" ? "Basic Maintenance" : "Repairs & Diagnostics";
+    return `${value.active === false ? "Inactive" : "Active"} · ${category}${value.provisional ? " · Provisional" : ""} · ${value.description}`;
+  }
   if (path.startsWith("weeklyHours.") || path === "breaks") {
     if (!Array.isArray(value)) return "Invalid intervals";
     return value.length ? value.map(interval => `${formatBookingTime(interval.start) || "Invalid start"}–${formatBookingTime(interval.end) || "Invalid end"}`).join(", ") : path === "breaks" ? "No breaks" : "Closed";
@@ -53,8 +77,7 @@ function display(path, value) {
   if (path === "closedDates") return Array.isArray(value) && value.length ? value.map(formatBookingDate).join(", ") : "No closed dates";
   if (typeof value === "boolean") {
     if (path.endsWith("requiresApproval")) {
-      const provisional = SERVICES.find(service => service.name === path.split(".")[1])?.provisional;
-      return value ? "Required" : provisional ? "Always manual (provisional service)" : "Eligible when verified";
+      return value ? "Required" : "Eligible when verified";
     }
     if (path.endsWith("Verified")) return value ? "Verified" : "Not verified";
     return value ? "Enabled" : "Disabled";
@@ -72,6 +95,7 @@ export function settingsPatch(saved, draft) {
     const [first, second, third] = change.path.split(".");
     if (first === "weeklyHours") (patch.weeklyHours ||= {})[second] = copy(change.after);
     else if (first === "serviceRules") ((patch.serviceRules ||= {})[second] ||= {})[third] = copy(change.after);
+    else if (first === "serviceCatalog") patch.serviceCatalog = copy(getServiceCatalog(draft));
     else patch[first] = copy(change.after);
   }
   return patch;
@@ -86,10 +110,21 @@ export function settingsChanges(saved, draft) {
 }
 
 function readLeaf(settings, path) {
+  if (path.startsWith("serviceCatalog.")) return getServiceCatalog(settings).find(service => service.name === path.slice("serviceCatalog.".length));
   return path.split(".").reduce((value, key) => value?.[key], settings);
 }
 
 function writeLeaf(settings, path, value) {
+  if (path.startsWith("serviceCatalog.")) {
+    const name = path.slice("serviceCatalog.".length);
+    const catalog = copy(getServiceCatalog(settings));
+    const index = catalog.findIndex(service => service.name === name);
+    if (value === undefined) { if (index >= 0) catalog.splice(index, 1); }
+    else if (index < 0) catalog.push(copy(value));
+    else catalog[index] = copy(value);
+    settings.serviceCatalog = catalog;
+    return;
+  }
   const keys = path.split(".");
   const last = keys.pop();
   const target = keys.reduce((current, key) => (current[key] ||= {}), settings);
@@ -148,8 +183,11 @@ function validUtcTimestamp(value) {
 }
 
 /** Fast client feedback; every save is still validated atomically by the API. */
-export function validateSettingsDraft(draft) {
-  if (!hasOnly(draft, allowedKeys) || allowedKeys.some(key => !Object.hasOwn(draft, key))) return "Scheduling settings could not be verified. Reload the saved settings.";
+export function validateSettingsDraft(draft, previousSettings) {
+  if (!hasOnly(draft, allowedKeys) || allowedKeys.some(key => key !== "serviceCatalog" && !Object.hasOwn(draft, key))) return "Scheduling settings could not be verified. Reload the saved settings.";
+  let catalog;
+  try { catalog = validateServiceCatalog(getServiceCatalog(draft), getServiceCatalog(previousSettings)); }
+  catch (error) { return error.message; }
   if (typeof draft.timezone !== "string" || !draft.timezone || draft.timezone.length > 100) return "Enter a supported shop timezone, such as America/Chicago.";
   try { new Intl.DateTimeFormat("en-US", { timeZone: draft.timezone }); }
   catch { return "Enter a supported shop timezone, such as America/Chicago."; }
@@ -174,12 +212,12 @@ export function validateSettingsDraft(draft) {
     if (!Number.isInteger(draft[key]) || draft[key] < minimum || draft[key] > maximum) return `${fields[key] || "Legacy booking estimate"} must be a whole number from ${minimum} to ${maximum}.`;
   }
   if (1440 % draft.startIncrementMinutes !== 0) return "Appointment start increments must divide evenly into a day (for example, 15, 30, or 60 minutes).";
-  if (!hasOnly(draft.serviceRules, SERVICES.map(service => service.name))) return "Review the service booking estimates.";
-  for (const service of SERVICES) {
+  if (!hasOnly(draft.serviceRules, catalog.map(service => service.name))) return "Review the service booking estimates.";
+  for (const service of catalog) {
     const rule = draft.serviceRules[service.name];
     if (!hasOnly(rule, ["durationMinutes", "requiresApproval"]) || !Number.isInteger(rule.durationMinutes) || rule.durationMinutes < 5 || rule.durationMinutes > 720) return `${service.name} needs a whole-minute booking estimate from 5 to 720 minutes.`;
     if (typeof rule.requiresApproval !== "boolean") return `Review the approval requirement for ${service.name}.`;
-    if (service.category === "repairs" && !rule.requiresApproval) return `${service.name} always requires mechanic approval.`;
+    if (requiresMechanicApproval(service) && !rule.requiresApproval) return `${service.name} always requires mechanic approval.`;
   }
   for (const key of ["automaticBookingEnabled", "businessHoursVerified", "capacityVerified"]) {
     if (typeof draft[key] !== "boolean") return "Review the automatic-booking and verification acknowledgments.";

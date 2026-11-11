@@ -2,7 +2,7 @@
 
 ## Safe development defaults
 
-The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop"`). Subsequent starts **preserve** saved settings. One compatibility correction upgrades previously saved repair/diagnostic rules with `requiresApproval: false` to `true` under the same MongoDB revision guard. This fixes earlier PR #9 defaults, increments the settings revision, and preserves hours, capacity, estimates, and automatic-booking/verification flags. Defaults are editable placeholders, not confirmed business information:
+The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop"`). Subsequent starts **preserve** saved settings. The compatibility path seeds a missing `serviceCatalog` from the shared initial definitions and corrects approval flags that conflict with Edward's current manual-only policy under the same MongoDB revision guard. It increments the settings revision while preserving hours, capacity, estimates, appointments, and automatic-booking/verification flags. It does not replace an already saved catalog or enable automation. Defaults are editable placeholders, not confirmed business information:
 
 | Setting | Default |
 | --- | --- |
@@ -19,13 +19,13 @@ The first API startup seeds one MongoDB `schedulingstates` document (`_id: "shop
 | Automatic booking | **Disabled** |
 | Hours/capacity verified | **Both false** |
 
-Cabin filter, engine filter, and wiper booking estimates are 30 minutes; tire rotation and oil change are 60; engine diagnostics is 90. Brake, AC/heating, and Other / Not Sure have editable 120-minute placeholders. **All Repairs & Diagnostics services, including Engine Diagnostics, always require mechanic approval**; settings updates cannot disable that category policy. These estimates reserve time, not guaranteed repair completion times. The existing shared service catalog remains the source of accepted names and provisional service flags.
+Cabin filter, engine filter, and wiper booking estimates are 30 minutes; tire rotation and oil change are 60; engine diagnostics is 90. Brake, AC/heating, and Other / Not Sure have editable 120-minute placeholders. **Only Wiper Blade Replacement is currently eligible for automatic confirmation**, subject to every verification/enablement guard below. Oil Change, Cabin Air Filter Replacement, all other maintenance services, and all Repairs & Diagnostics services require mechanic approval; settings updates cannot bypass that policy. These estimates reserve time, not guaranteed repair completion times or billable labor hours. The persisted service catalog supplies accepted names, activity, and provisional flags; shared definitions seed it once. See [Service catalog and approval rules](service-catalog.md).
 
 Both the service duration **and buffer** must fit inside one work interval and avoid lunch, closures, and blocked periods. For example, an hour-long visit at 11:00 AM is unavailable because its buffer would cross into lunch. No US holiday assumptions are invented: Edward must enter `closedDates` or blocked periods.
 
 ## Atomic protection on standalone MongoDB
 
-`SchedulingState` stores settings, non-PII reservations, and daily automatic-admission counters together. Every capacity-affecting reservation, approval, block, and settings edit uses a MongoDB compare-and-swap on the singleton's unique `_id` and incrementing `revision`. A losing writer reloads and recalculates; after bounded retries it fails with 503 rather than bypassing protection. This is database-backed across API processes, not an in-memory mutex or non-atomic check/insert. No replica set, transaction support, or local MongoDB reconfiguration is required. Critical writes use majority acknowledgement and journaling (majority is one node on standalone MongoDB).
+`SchedulingState` stores settings (including the service catalog), non-PII reservations, and daily automatic-admission counters together. Every capacity-affecting reservation, approval, block, and settings/catalog edit uses a MongoDB compare-and-swap on the singleton's unique `_id` and incrementing `revision`. A losing writer reloads and recalculates; after bounded retries it fails with 503 rather than bypassing protection. This is database-backed across API processes, not an in-memory mutex or non-atomic check/insert. No replica set, transaction support, or local MongoDB reconfiguration is required. Critical writes use majority acknowledgement and journaling (majority is one node on standalone MongoDB).
 
 The intervals are end-exclusive: `[startAt, endAt + buffer)`. A sweep-line calculation enforces simultaneous capacity over the complete interval, including staggered start times and differing durations. Reservations and existing appointment records are conservatively combined by appointment ID without double counting. Settings edits and booking admissions share the same atomic revision, preventing booking-versus-block races. `settingsRevision` changes only when configuration changes, so an editor need not retry merely because a booking happened.
 
@@ -47,7 +47,7 @@ Backup/restore **both collections together**. Direct appointment/ledger edits by
 - Confirming an expired request requires acquiring capacity again; a conflict returns HTTP 409 and leaves the request pending. Approval may occur inside the original 24-hour notice window or beyond a subsequently shortened horizon. Historical requests at off-grid times such as 08:15 may be approved: the configured start grid applies to new customer bookings, not manual approval of existing requests. Approval must still be future, obey current working hours, breaks, closures, blocked periods, duration/buffer and timezone constraints, and fit capacity. New customer submissions and public slots continue to enforce the configured grid.
 - Confirmed appointments remain occupied until their interval/buffer ends or an eligible cancellation is saved; pending-hold expiry never releases a confirmed appointment.
 - Declined and cancelled records are terminal and never consume capacity, including when a stale reservation remains after interrupted cleanup. Cancelling a future pending request whose hold has expired still records its decision without affecting another appointment's reservation. Cancellation history and original date/time remain in MongoDB; there is no record deletion.
-- Existing records without scheduling metadata use the shared catalog's duration (including the old `Air Filter Change` alias) or the conservative unknown-service estimate, plus buffer. Old strings are preserved in storage and email; no migration rewrites them.
+- Existing records without scheduling metadata use the retained saved catalog's duration (including inactive definitions and the old `Air Filter Change` alias) or the conservative unknown-service estimate, plus buffer. Old strings are preserved in storage and email; no migration rewrites them.
 - Legacy pending age is `createdAt + pendingHoldHours`. A request lacking usable age metadata remains occupied until reviewed. Missing legacy status is treated as pending on reads/review without bulk rewriting records.
 - New records snapshot UTC start/end, timezone, duration, buffer, hold expiry, and settings revision. Approvals preserve known duration/buffer bounds even if later defaults change. They revalidate against current working hours/closures. A changed timezone cannot reinterpret an expired request; Edward must decline it and obtain a new request instead.
 - A valid legacy date with an unusable time conservatively blocks that whole date plus the maximum supported duration/buffer spillover. Clearly past records do not disable future dates. A completely unparseable active legacy date fails closed and needs data review. Do not guess its schedule or silently discard it.
@@ -64,10 +64,10 @@ Normal submissions **remain pending** under the seeded defaults. Automation requ
 
 - `automaticBookingEnabled: true`;
 - `businessHoursVerified: true` and `capacityVerified: true`, after actual business confirmation;
-- a non-provisional **Basic Maintenance** service whose scheduling rule permits automatic approval;
+- an active, non-provisional **Wiper Blade Replacement** service whose scheduling rule permits automatic approval;
 - a newly revalidated, atomically reserved slot and an available daily automatic-admission place.
 
-Enabling the flag alone cannot confirm using placeholder hours/capacity. Editing saved hours/timezone/breaks or capacity invalidates the corresponding verification unless the same authenticated edit explicitly re-verifies it. Provisional tire/cabin-filter/wiper services cannot be automatically confirmed even when settings are verified. Every Repairs & Diagnostics service (Brake Repairs, AC & Heating Repair, Engine Diagnostics, and Other / Not Sure) always requires approval. This list is derived from the shared catalog category, so new repair-category entries cannot accidentally become automatic. When the automatic limit is reached, an otherwise valid request remains pending with a provisional hold. Email receipts reflect actual automatic confirmation when it happens; pending receipts never imply approval. No live settings were enabled during development.
+Enabling the flag alone cannot confirm using placeholder hours/capacity. Editing saved hours/timezone/breaks or capacity invalidates the corresponding verification unless the same authenticated edit explicitly re-verifies it. Wiper Blade Replacement is no longer provisional following Edward's confirmation. Tire Rotation and Cabin Air Filter Replacement retain their provisional availability labels. Every other service remains manual, including Oil Change and any Suspension Repair or other custom entry added later. Changing a category or forging a false approval flag cannot turn those services automatic. When the automatic limit is reached, an otherwise valid request remains pending with a provisional hold. Email receipts reflect actual automatic confirmation when it happens; pending receipts never imply approval. No live settings were enabled during development.
 
 See [Readability, booking validation, and decline communication](accessibility-validation.md) for the Prompt 5 typography audit, strict phone/field-validation policy, reviewed decline reasons, customer email formatting, and manual user-testing checklist.
 
@@ -85,13 +85,14 @@ Cancellation adds distinct customer/mechanic queue events and suppresses unsent 
 
 | Method and route | Access / purpose |
 | --- | --- |
+| `GET /api/services` | Public active service definitions and settings revision only; no private scheduling/customer data |
 | `GET /api/availability?service=Oil%20Change&date=YYYY-MM-DD` | Public sanitized slots and policy metadata; no customer fields, IDs, counts, or block reasons |
 | `GET /api/availability/calendar?service=Oil%20Change&month=YYYY-MM` | Public month summary and shop-local booking bounds; `month` is optional and defaults to the current shop-local month |
 | `POST /api/appointments` | Existing public request body; validates again and reserves atomically; 201 only after the record saves |
 | `PATCH /api/mechanic/appointments/:id` | Existing mechanic session + CSRF; `{status:"confirmed"}` rechecks and acquires capacity; `{status:"declined"}` releases |
 | `POST /api/mechanic/appointments/:id/cancel` | Mechanic session + CSRF; reviewed `{category, explanation?}`; saves cancellation before releasing only its reservation |
 | `GET /api/mechanic/scheduling/settings` | Mechanic session; `{revision, settings}` |
-| `PATCH /api/mechanic/scheduling/settings` | Mechanic session + CSRF; `{revision, settings: partialPatch}`; stale settings revision -> 409 |
+| `PATCH /api/mechanic/scheduling/settings` | Mechanic session + CSRF; `{revision, settings: partialPatch}`, including reviewed catalog/rule edits; stale settings revision -> 409 |
 | `POST /api/mechanic/scheduling/blocks` | Mechanic session + CSRF; `{startAt, endAt, reason?, revision?}` -> 201 with generated block ID; stale optional revision -> 409 |
 | `DELETE /api/mechanic/scheduling/blocks/:id` | Mechanic session + CSRF; optional JSON `{revision}`; removes a block only if the supplied revision is current |
 
@@ -99,7 +100,7 @@ Availability returns `{date,service,timezone,durationMinutes,slots,policy,settin
 
 ### Month summaries
 
-The calendar endpoint supplements the existing single-day endpoint; it does not change the booking or approval rules. A valid shared-catalog service is required. Legacy service aliases such as `Air Filter Change` are accepted and the response uses the canonical name. A supplied month must be one `YYYY-MM` value within the months touched by the current booking window. Malformed, duplicate, or out-of-range month parameters return 400.
+The calendar endpoint supplements the existing single-day endpoint; it does not change the booking or approval rules. A valid active service from the saved catalog is required. Legacy service aliases such as `Air Filter Change` are accepted while their retained service is active, and the response uses the canonical name. A supplied month must be one `YYYY-MM` value within the months touched by the current booking window. Malformed, duplicate, or out-of-range month parameters return 400.
 
 The response contains only:
 
@@ -125,7 +126,7 @@ The protected staff dashboard edits `weeklyHours` (0=Sunday … 6=Saturday, arra
 
 ## Customer calendar and booking flow
 
-The appointment page uses four steps: choose a service, choose a date/time, enter customer/vehicle details, and review/send. Service categories, accepted names, provisional labels, and service-card preselection come from the existing shared catalog. Changing the service clears the selected date/time; changing the date clears the time. Customer details remain in React memory through these changes and conflict recovery, without writing them to browser storage.
+The appointment page uses four steps: choose a service, choose a date/time, enter customer/vehicle details, and review/send. Service definitions, accepted names, provisional labels, and service-card preselection use the saved active catalog returned by `GET /api/services`; categories and lookup validation share the existing pure helpers. A catalog failure offers retry/contact guidance rather than restoring stale choices. Changing the service clears the selected date/time; changing the date clears the time. Customer details remain in React memory through these changes and conflict recovery, without writing them to browser storage. The final booking mutation rechecks current service activity under the same scheduling revision as reservation admission.
 
 The month calendar distinguishes today, selected, available, unavailable, and loading dates using text/symbols as well as color. Dates cannot be selected until the API says they are available. Month controls stay inside server-provided bounds. The calendar has weekday headings, labeled date buttons, visible focus, loading/error announcements, and keyboard movement: arrow keys by day/week, Home/End within the week, and Page Up/Page Down between supported months. Desktop layouts place the calendar and times alongside one another; narrower layouts stack them.
 
@@ -141,13 +142,13 @@ A missing slot or HTTP 409 clears the selected time and review, refreshes calend
 
 Successful responses are displayed according to the saved server status. Pending requests say: “Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet.” The page shows the reference ID and, when supplied, the hold expiration formatted in the shop timezone, explaining that the request remains on file after expiry. Confirmed wording is shown only for an explicit `confirmed` server response. Existing mechanic review, MongoDB persistence, session/CSRF protection, and email queue/retry behavior are preserved.
 
-The calendar does not edit business settings or enable automatic booking. **Automatic booking remains disabled by default**, hours/capacity remain unverified placeholders, and provisional services remain subject to Edward's confirmation. Edward must verify real hours, capacity, service availability, and booking-duration estimates before enabling eligible Basic Maintenance automation through the existing protected settings workflow. Repairs & Diagnostics always require mechanic approval.
+The calendar does not edit business settings or enable automatic booking. **Automatic booking remains disabled by default**, hours/capacity remain unverified placeholders, and provisional services remain subject to Edward's confirmation. Edward must verify real hours, capacity, service availability, and booking-duration estimates before enabling eligible Wiper Blade Replacement automation through the existing protected settings workflow. Every other service requires mechanic approval.
 
 ## Mechanic scheduling dashboard
 
 Sign in at `/mechanic` using the existing Staff Login link. The authenticated workspace separates appointment management from **Business Hours**, **Closures & Blocked Times**, and **Booking Settings**. Unauthenticated visitors see only the sign-in screen. Settings are fetched lazily when an authenticated staff member first opens a scheduling section, and reused across section navigation within that session. Opening the dashboard never replaces stored settings with placeholders.
 
-**Appointments** preserves pending/confirmed/declined/all filters, customer contact/vehicle/notes, and the existing Confirm/Decline actions. A conflicting approval displays the server error and leaves the request pending. Notification queue/retry behavior is unchanged. Existing request date/time strings, duration snapshots, and status semantics remain in storage.
+**Appointments** preserves pending/confirmed/declined/cancelled/all filters, customer contact/vehicle/notes, and the existing Confirm/Decline/Cancel actions where eligible. A conflicting approval displays the server error and leaves the request pending. Notification queue/retry behavior is unchanged. Existing request date/time strings, duration snapshots, and status semantics remain in storage.
 
 **Business Hours** provides an Open/Closed control for every weekday and supports up to 24 non-overlapping work intervals per day. Add or remove intervals and edit opening/closing times in AM/PM. A closed weekday has no working intervals and offers no customer appointments. Closing must follow opening within one shop day; invalid or overlapping intervals cannot be saved. The recurring-break editor supports up to 24 non-overlapping daily breaks. These breaks apply **shop-wide on every open day**, not to selected weekdays or individual staff. The interface makes this limitation explicit rather than changing the scheduling schema.
 
@@ -176,7 +177,7 @@ A stale-revision block error locks further block/settings mutations until **Relo
 | Pending request hold duration | 1–168 hours |
 | Service booking estimate | 5–720 minutes |
 
-Service names/categories/provisional flags come from the shared catalog. Estimate changes affect new availability, not historical held/confirmed duration and buffer snapshots. The legacy unknown-service estimate remains an existing backend compatibility setting; this dashboard does not rewrite old service names or expose a separate unknown-service catalog entry.
+**Service catalog** lets authenticated staff add an owner-confirmed service or activate/deactivate a retained entry within the same reviewed settings draft. It uses the persisted catalog instead of an independent dashboard list. Names and historical aliases remain immutable; deactivate rather than delete. Deactivation removes new-booking choices and public cards, while existing appointments stay reviewable/cancellable and keep their own duration/buffer snapshots. Estimate changes affect new availability. The legacy unknown-service estimate remains an existing backend compatibility setting; this dashboard does not rewrite old service names or expose a separate unknown-service catalog entry. Full validation and the limits of 50 retained entries, 50-character names, and 300-character descriptions are described in [Service catalog and approval rules](service-catalog.md).
 
 ### Explicit verification and automatic-booking safety
 
@@ -184,7 +185,7 @@ The dashboard shows the saved/draft automation and verification state, with sepa
 
 Enabling automatic booking is unavailable until both acknowledgments are present and requires a separate confirmation explaining its consequences. That confirmation changes the draft only; Save Changes and then Confirm Changes are still required to apply the reviewed configuration. Opening the page, editing an unrelated setting, or saving does not itself enable automation. Disabling automation is available without removing other business settings.
 
-Only non-provisional Basic Maintenance services can be made eligible; Edward may additionally require their manual approval. The UI provides no override for Repairs & Diagnostics or provisional services. All Repairs & Diagnostics, including Engine Diagnostics, always require mechanic approval at the backend. Provisional services remain ineligible for automatic confirmation even if their stored `requiresApproval` flag is false. The customer page displays only the status actually saved by the server.
+Only active, non-provisional Wiper Blade Replacement can be made eligible; Edward may additionally require its manual approval. The UI and backend provide no override for Oil Change, Cabin Air Filter Replacement, Repairs & Diagnostics, or other custom/maintenance services. Provisional entries remain ineligible. The customer page displays only the status actually saved by the server. This release keeps the initial services unchanged, does not add Suspension Repair automatically, does not enable the proposed three-oil-changes-per-hour model, and does not publish a fixed oil-change price.
 
 ### Revision conflicts and private-state lifetime
 
@@ -226,6 +227,6 @@ npm run test:browser
 
 The backend suite also covers the staff settings API workflow: persisted split hours/closed weekdays/breaks, closure/block lifecycle and privacy, revision conflicts with explicit partial retry, policy/duration updates retaining historical snapshots, and configuration/block conflicts that leave reservations and appointments unchanged. Block revision regressions verify stale-timezone rejection with no write, fresh timezone conversion after reload, a forced concurrent timezone/block CAS race, invalid preconditions, guarded removal, and backward-compatible UTC-only clients. The dashboard browser suite extends coverage to editing, confirmation safeguards, revision recovery, private-state clearing, responsive layouts, and U.S. date/time display. All tests use synthetic customers and isolated data. Tests may exercise automation flags only in isolated fixtures; they do not enable automatic booking or change actual shop settings. External Brevo delivery remains untested.
 
-Final Prompt 4 validation passed **117 backend tests**, **48 frontend/shared tests**, and **102 browser cases** (57 customer calendar cases, three real booking/dashboard cases, and 42 staff scheduling cases) across desktop, tablet, and mobile widths. ESLint, the production build, and whitespace checks passed. Automated WCAG 2 A/AA and 2.1 AA audits reported no violations and no horizontal overflow. Chromium layouts were visually reviewed; manual Firefox/Safari and assistive-technology checks remain outside this run, as does live Brevo delivery.
+The service-catalog regressions additionally exercise authenticated add/deactivate/reactivate edits, immutable names and aliases, catalog/booking races, stale revisions, active-only public metadata, dynamic preselection, retained historical records, and Wiper-only automatic eligibility. Record exact counts and failures from the final commands in the feature pull request. Automated Chromium/WCAG and responsive checks supplement manual Firefox/Safari and assistive-technology verification; live Brevo delivery remains outside these synthetic tests.
 
 Start the API with `cd server && npm start`, and Vite from the root with `npm run dev -- --host 0.0.0.0 --port 5173 --strictPort`. Keep SMTP unset for synthetic local checks. External Brevo delivery is not tested here; its dispatcher/session protections are retained and notification tests cover pending/automatic receipts and retry behavior.

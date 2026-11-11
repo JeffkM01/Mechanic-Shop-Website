@@ -9,10 +9,12 @@ import Appointment from "./pages/Appointment";
 import Contact from "./pages/Contact";
 import MechanicDashboard from "./pages/MechanicDashboard";
 import ManageAppointment from "./pages/ManageAppointment";
+import ServiceCatalogProvider from "./components/ServiceCatalogProvider";
 
 function App() {
   return (
     <BrowserRouter>
+      <ServiceCatalogProvider>
       <RouteExperience />
       <Navbar />
       <div id="main-content" className="route-content" tabIndex={-1}>
@@ -27,6 +29,7 @@ function App() {
         </Routes>
       </div>
       <Footer />
+      </ServiceCatalogProvider>
     </BrowserRouter>
   );
 }

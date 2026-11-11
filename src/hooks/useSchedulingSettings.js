@@ -49,19 +49,27 @@ export default function useSchedulingSettings(request, enabled) {
 
   async function save() {
     if (locked.current || !saved || !draft || conflict || !dirty) return false;
-    const invalid = validateSettingsDraft(draft);
+    const invalid = validateSettingsDraft(draft, saved.settings);
     if (invalid) { setError(invalid); return false; }
     locked.current = true; setBusy(true); setError(""); setNotice("");
     try {
       const result = await request("/scheduling/settings", { method: "PATCH", body: { revision: saved.revision, settings: settingsPatch(saved.settings, draft) } });
       if (!alive.current) return false;
+      if (!Number.isInteger(result?.revision) || result.revision <= saved.revision || validateSettingsDraft(result?.settings, saved.settings)) {
+        throw new Error("The saved settings response could not be verified.");
+      }
       setSaved(result); setDraft(copy(result.settings));
       setNotice("Scheduling changes saved. Customer availability now uses the saved settings.");
       return true;
     } catch (failure) {
       if (!alive.current) return;
-      setError(failure.message);
-      if (failure.status === 409 && failure.code === "SETTINGS_CHANGED") setConflict({ latest: null, overlaps: [] });
+      if (!failure.status || failure.status >= 500) {
+        setError("We could not verify whether the settings were saved. Reload Latest Settings before reviewing or submitting another change.");
+        setConflict({ latest: null, overlaps: [], uncertainSave: true });
+      } else {
+        setError(failure.message);
+        if (failure.status === 409 && failure.code === "SETTINGS_CHANGED") setConflict({ latest: null, overlaps: [] });
+      }
       return false;
     } finally { locked.current = false; if (alive.current) setBusy(false); }
   }
@@ -86,7 +94,7 @@ export default function useSchedulingSettings(request, enabled) {
       }
       const rebased = rebaseSettings(saved.settings, draft, latest.settings);
       setConflict({ latest, overlaps: rebased.conflicts });
-      setNotice("Latest saved settings loaded. Your edits have been kept for review; nothing has been saved.");
+      setNotice("Latest saved settings loaded. Compare the saved values with your draft before reviewing further changes.");
     } catch (failure) { if (alive.current) setError(failure.message); }
     finally { locked.current = false; if (alive.current) setBusy(false); }
   }
@@ -124,7 +132,7 @@ export default function useSchedulingSettings(request, enabled) {
   return {
     saved, draft, dirty, changes, loading: loading || Boolean(enabled && !saved && !error), busy, error, notice, conflict,
     change, save, discard, reloadLatest, reviewLatest,
-    validate: () => { const invalid = validateSettingsDraft(draft); setError(invalid); return !invalid; },
+    validate: () => { const invalid = validateSettingsDraft(draft, saved?.settings); setError(invalid); return !invalid; },
     retry: () => { initialRequest.current = null; setError(""); setLoading(true); setReloadCount(value => value + 1); },
     addBlock: body => blockMutation("/scheduling/blocks", { method: "POST", body: { ...body, revision: saved.revision } }),
     removeBlock: id => blockMutation(`/scheduling/blocks/${encodeURIComponent(id)}`, { method: "DELETE", body: { revision: saved.revision } }),
