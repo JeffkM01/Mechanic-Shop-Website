@@ -1,0 +1,111 @@
+name: Validate website and appointment API
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      TEST_MONGODB_URI: mongodb://127.0.0.1:27017
+      # No production URI, SMTP credentials, management key, or staff password.
+      # Fixtures own random databases and disabled/injected mail transports.
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'if (!db.adminCommand({ping:1}).ok) quit(1)'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Install API dependencies
+        run: npm ci --prefix server
+      - name: Check production dependency advisories
+        run: |
+          npm audit --omit=dev
+          npm audit --omit=dev --prefix server
+      - name: Lint
+        run: npm run lint
+      - name: Build frontend
+        run: npm run build
+      - name: Test shared and frontend logic
+        run: npm test
+      - name: Test API and MongoDB scheduling
+        run: npm test --prefix server
+      - name: Build portable production image without publishing
+        run: docker build -t eds-auto-shop:ci .
+      - name: Check packaged server against isolated MongoDB
+        env:
+          MONGO_SERVICE_CONTAINER: ${{ job.services.mongodb.id }}
+        run: |
+          container_id="$(docker run -d --network "container:$MONGO_SERVICE_CONTAINER" \
+            -e MONGODB_URI=mongodb://127.0.0.1:27017/eds_runtime_test_ci \
+            -e MECHANIC_ADMIN_PASSWORD=Synthetic-image-CI-password-2026 \
+            eds-auto-shop:ci)"
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          docker exec "$container_id" node --input-type=module -e '
+            import assert from "node:assert/strict";
+            const origin = "http://127.0.0.1:3001";
+            let healthy = false;
+            for (let attempt = 0; attempt < 30; attempt++) {
+              try { healthy = (await fetch(origin + "/api/health")).ok; } catch {}
+              if (healthy) break;
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            assert.ok(healthy, "Packaged API must connect to the disposable MongoDB service");
+            const page = await fetch(origin + "/appointment", { headers: { Accept: "text/html" } });
+            assert.equal(page.status, 200);
+            assert.ok((await page.text()).includes("<div id=\"root\"></div>"));
+            assert.equal(page.headers.get("cache-control"), "no-store");
+            const missing = await fetch(origin + "/api/missing", { headers: { Accept: "text/html" } });
+            assert.equal(missing.status, 404);
+            assert.equal((await missing.json()).code, "API_NOT_FOUND");
+            const asset = await fetch(origin + "/assets/missing.js", { headers: { Accept: "text/html" } });
+            assert.equal(asset.status, 404);
+          '
+          docker stop --time 35 "$container_id" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" = 0
+      - name: Install Chromium and browser dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Test customer and staff workflows
+        run: npm run test:browser
+      - name: Retain synthetic browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-failure-evidence
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

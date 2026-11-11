@@ -6,7 +6,8 @@ export async function createEmailNotifications({ Appointment, env = process.env,
   const keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM", "MECHANIC_NOTIFICATION_EMAIL"];
   const enabled = keys.every((key) => typeof env[key] === "string" && env[key].trim().length > 0);
   if (!enabled) {
-    return { enabled: false, start() {}, kick() {}, processPending: async () => {} };
+    const stop = async () => {};
+    return { enabled: false, start: () => stop, stop, kick() {}, processPending: async () => {} };
   }
 
   const port = Number(env.SMTP_PORT);
@@ -26,17 +27,24 @@ export async function createEmailNotifications({ Appointment, env = process.env,
   });
   const messageOptions = { from: env.MAIL_FROM, mechanicEmail: env.MECHANIC_NOTIFICATION_EMAIL };
   let processing = false;
+  let stopped = false;
+  let interval = null;
+  let draining = null;
 
   async function processPending() {
-    if (processing) return;
+    if (processing || stopped) return;
     processing = true;
+    let finished;
+    draining = new Promise(resolve => { finished = resolve; });
     try {
       const unsent = EMAIL_KINDS.map((kind) => ({ [`notificationState.${kind}`]: "pending" }));
       const appointments = await Appointment.find({ $or: unsent })
         .sort({ createdAt: 1 }).limit(50).lean();
 
       for (const queued of appointments) {
+        if (stopped) break;
         for (const kind of EMAIL_KINDS) {
+          if (stopped) break;
           try {
             // The batch is only a list of candidate IDs. A decision or
             // cancellation may have been saved since it was read, or even
@@ -63,6 +71,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
               || (kind === "decisionCustomer" && appointment.status === "confirmed");
             const managementLink = customerLink && management ? await management.emailLink(appointment) : null;
             const message = buildEmail(kind, appointment, { ...messageOptions, managementLink });
+            if (stopped) break;
             // A status change after this read / once transport starts cannot
             // recall an email. Delivery is at-least-once, never exactly-once.
             await mailer.sendMail(message);
@@ -83,19 +92,33 @@ export async function createEmailNotifications({ Appointment, env = process.env,
       logger.error("Notification queue could not be processed; it will be retried.");
     } finally {
       processing = false;
+      finished();
+      draining = null;
     }
   }
 
   function kick() {
-    setImmediate(() => { void processPending(); });
+    if (stopped) return;
+    setImmediate(() => { if (!stopped) void processPending(); });
   }
 
   function start() {
+    if (interval) return stop;
+    stopped = false;
     kick();
-    const interval = setInterval(() => { void processPending(); }, 60_000);
+    interval = setInterval(() => { void processPending(); }, 60_000);
     interval.unref?.();
-    return () => clearInterval(interval);
+    return stop;
   }
 
-  return { enabled: true, start, kick, processPending };
+  function stop() {
+    stopped = true;
+    if (interval) clearInterval(interval);
+    interval = null;
+    // Await the current send and its Mongo acknowledgement. Unsent kinds stay
+    // queued for the next single dispatcher after restart.
+    return draining ?? Promise.resolve();
+  }
+
+  return { enabled: true, start, stop, kick, processPending };
 }

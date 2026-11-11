@@ -2,10 +2,17 @@ import express from "express";
 import { prepareAppointment } from "./appointmentInput.js";
 import { SchedulingError } from "./schedulingRules.js";
 import { createCustomerRoutes } from "./customerRoutes.js";
+import { serveBuiltFrontend } from "./staticFrontend.js";
 
-export function createApp({ Appointment, scheduling, auth, notifications, management = null, databaseReady = () => Appointment.db.readyState === 1 }) {
+export function createApp({ Appointment, scheduling, auth, notifications, management = null, databaseReady = () => Appointment.db.readyState === 1,
+  runtimeReady = () => true, frontendDirectory = null, trustProxy = false, logger = console }) {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", trustProxy);
+  app.use("/api", (_req, res, next) => {
+    res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
+    next();
+  });
   // Include parser failures and oversized requests in the sensitive-route
   // policy, before request bodies reach express.json or any route handler.
   app.use("/api/customer/appointments", (_req, res, next) => {
@@ -16,12 +23,25 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
 
   app.get("/api/health", (_req, res) => {
     const connected = databaseReady();
-    res.status(connected ? 200 : 503).json({ database: connected ? "connected" : "disconnected" });
+    const ready = runtimeReady();
+    res.status(connected && ready ? 200 : 503).json({ database: connected ? "connected" : "disconnected", ...(!ready ? { status: "draining" } : {}) });
+  });
+
+  app.get("/api/health/live", (_req, res) => res.status(runtimeReady() ? 200 : 503).json({ status: runtimeReady() ? "ok" : "draining" }));
+  app.use("/api", (_req, res, next) => {
+    if (!runtimeReady()) return res.status(503).json({ error: "The service is restarting. Please try again shortly.", code: "SERVICE_DRAINING" });
+    next();
   });
 
   app.get("/api/services", async (_req, res, next) => {
     res.set("Cache-Control", "no-store");
     try { res.json(await scheduling.getPublicServices()); }
+    catch (error) { next(error); }
+  });
+
+  app.get("/api/shop-hours", async (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    try { res.json(await scheduling.getPublicShopHours()); }
     catch (error) { next(error); }
   });
 
@@ -131,11 +151,17 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     try { res.json(await scheduling.removeBlockedPeriod(req.params.id, { expectedRevision: req.body?.revision })); } catch (error) { next(error); }
   });
 
+  // Never let an unknown API path fall through to the frontend HTML fallback.
+  app.use("/api", (_req, res) => res.status(404).json({ error: "API route not found.", code: "API_NOT_FOUND" }));
+  if (frontendDirectory) serveBuiltFrontend(app, frontendDirectory);
+
   app.use((error, _req, res, _next) => {
     if (error instanceof SchedulingError) return res.status(error.status).json({ error: error.message, code: error.code, ...(error.fields ? { fields: error.fields } : {}) });
     if (error instanceof SyntaxError && error.status === 400 && "body" in error) return res.status(400).json({ error: "Invalid JSON request." });
     if (error.type === "entity.too.large") return res.status(413).json({ error: "Request is too large." });
-    console.error("Appointment API request failed:", error);
+    // Driver and request errors may contain credentials, customer data or a
+    // management bearer. Keep ordinary production logs fixed and redacted.
+    logger.error("Appointment API request failed; the request can be retried.");
     return res.status(503).json({ error: "Unable to process the request right now. Please try again." });
   });
   return app;
