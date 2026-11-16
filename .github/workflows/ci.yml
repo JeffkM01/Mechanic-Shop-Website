@@ -98,7 +98,7 @@ jobs:
       - name: Install Chromium and browser dependencies
         run: npx playwright install --with-deps chromium
       - name: Test customer and staff workflows
-        run: npm run test:browser
+        run: npm run test:browser -- --workers=1 --reporter=list,github
       - name: Retain synthetic browser failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
