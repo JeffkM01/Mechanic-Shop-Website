@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "node server/index.js",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test shared/services.test.js src/utils/*.test.js",
+    "test": "node --test shared/*.test.js src/utils/*.test.js",
+    "check:launch": "node scripts/check-launch.js",
     "test:browser": "playwright test"
   },
   "dependencies": {

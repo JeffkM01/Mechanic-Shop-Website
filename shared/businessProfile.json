@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "Ed's Auto Shop",
+  "contact": {
+    "confirmed": false,
+    "phone": null,
+    "email": null,
+    "addressLines": []
+  },
+  "privacy": {
+    "approved": false,
+    "effectiveDate": null,
+    "hostingProvider": null,
+    "databaseProvider": null,
+    "emailProvider": "Brevo",
+    "retentionPolicy": null,
+    "requestInstructions": null
+  },
+  "cancellation": {
+    "approved": false,
+    "effectiveDate": null,
+    "policy": "until_start_no_fee"
+  }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
-const titles = { "/": "Auto Repair & Maintenance", "/services": "Our Services", "/about": "About Us", "/contact": "Contact Us", "/appointment": "Request an Appointment", "/mechanic": "Staff Dashboard" };
+const titles = { "/": "Auto Repair & Maintenance", "/services": "Our Services", "/about": "About Us", "/contact": "Contact Us", "/appointment": "Request an Appointment", "/mechanic": "Staff Dashboard", "/manage-appointment": "Manage Your Appointment", "/privacy": "Privacy Information", "/cancellation-policy": "Cancellation Policy" };
 
 export default function RouteExperience() {
   const { pathname, hash } = useLocation();

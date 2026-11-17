@@ -17,6 +17,16 @@ dist-ssr
 .env.*
 !.env.example
 
+# Operator-only backup credentials, recovery keys and database archives.
+/.private/
+/backups/
+/recovery-private/
+*.age
+*.agekey
+*.archive
+*.bson
+*.dump
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

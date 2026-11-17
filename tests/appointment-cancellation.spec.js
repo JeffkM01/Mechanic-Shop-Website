@@ -2,7 +2,7 @@ import { chromium } from "@playwright/test";
 import axe from "axe-core";
 import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -62,8 +62,8 @@ async function reachable(control) {
 }
 async function capture(page, testInfo, name, nativeZoom = false) {
   const path = testInfo.outputPath(`${name}.png`);
-  let png;
   if (nativeZoom) {
+    let png;
     const session = await page.context().newCDPSession(page);
     try {
       const result = await session.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
@@ -75,14 +75,11 @@ async function capture(page, testInfo, name, nativeZoom = false) {
     // Native modal geometry is tied to the viewport. A full-page capture changes
     // the capture height and misrepresents the dialog/backdrop and focus state.
     const modalOpen = await page.locator("dialog[open]").count() > 0;
-    png = await page.screenshot({ path, fullPage: !modalOpen });
+    await page.screenshot({ path, fullPage: !modalOpen });
   }
-  // A portable Playwright attachment and cloud-visible evidence contain only
+  // Portable Playwright attachments contain only
   // synthetic appointments; scrubbed page URLs never contain access tokens.
   await testInfo.attach(name, { path, contentType: "image/png" });
-  const artifacts = "/workspace/artifacts/cancellation";
-  await mkdir(artifacts, { recursive: true });
-  await writeFile(join(artifacts, `${testInfo.project.name}-${name}.png`), png);
 }
 async function submitBooking(page) {
   await page.goto("/appointment?service=Oil+Change");
