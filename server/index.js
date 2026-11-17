@@ -11,6 +11,7 @@ import { createApp } from "./app.js";
 import { createCustomerManagement } from "./customerManagement.js";
 import { readRuntimeConfig } from "./runtimeConfig.js";
 import { createServerRuntime, listen } from "./serverRuntime.js";
+import { createOperationTracker } from "./operationTracker.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -31,16 +32,16 @@ try {
   const scheduling = createSchedulingService({ Appointment, SchedulingState, management });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
   notifications = await createEmailNotifications({ Appointment, management });
-  let accepting = true;
+  const operationTracker = createOperationTracker();
   const app = createApp({ Appointment, scheduling, auth, notifications, management,
-    runtimeReady: () => accepting,
+    operationTracker,
     trustProxy: config.trustProxy,
     frontendDirectory: config.serveFrontend ? fileURLToPath(new URL("../dist/", import.meta.url)) : null,
   });
   server = createServer(app);
   const runtime = createServerRuntime({ server,
     disconnectDatabase: () => mongoose.disconnect(), stopNotifications: () => notifications.stop(),
-    markNotReady: () => { accepting = false; }, graceMs: config.shutdownGraceMs,
+    stopApplicationWork: operationTracker.stop, graceMs: config.shutdownGraceMs,
   });
   await listen(server, config);
   runtime.installSignalHandlers();

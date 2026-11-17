@@ -1,6 +1,6 @@
 // The application is deliberately one long-running Node process. In-memory
 // staff sessions and dispatcher ownership must not be split across replicas.
-export function createServerRuntime({ server, disconnectDatabase, stopNotifications = () => {}, markNotReady = () => {},
+export function createServerRuntime({ server, disconnectDatabase, stopNotifications = () => {}, stopApplicationWork = () => {}, markNotReady = () => {},
   graceMs = 10000, logger = console, processRef = process }) {
   let shuttingDown;
   let installed = false;
@@ -15,13 +15,18 @@ export function createServerRuntime({ server, disconnectDatabase, stopNotificati
   function shutdown() {
     if (shuttingDown) return shuttingDown;
     markNotReady();
+    // Close application admission immediately, including requests whose socket
+    // has already closed but whose asynchronous handler is still running.
+    let applicationWork;
+    try { applicationWork = Promise.resolve(stopApplicationWork()); }
+    catch (error) { applicationWork = Promise.reject(error); }
     shuttingDown = (async () => {
       let failed = false;
       let timeout;
       const finish = async () => {
-        const results = await Promise.allSettled([closeHttp(), Promise.resolve().then(stopNotifications)]);
+        const results = await Promise.allSettled([closeHttp(), applicationWork, Promise.resolve().then(stopNotifications)]);
         for (const result of results) if (result.status === "rejected") failed = true;
-        // Do not close MongoDB while an accepted HTTP request or mail
+        // Do not close MongoDB while an accepted application handler or mail
         // acknowledgement is still writing its durable state.
         try { await disconnectDatabase(); }
         catch { failed = true; }

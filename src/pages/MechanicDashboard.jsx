@@ -56,7 +56,7 @@ function Appointments({ request }) {
     try {
       const result = await request(`/appointments/${id}/cancel`, { method: "POST", body: reason });
       if (result.status !== "cancelled") throw new Error("Cancellation status could not be verified.");
-      const delivery = result.emailNotification === "queued" ? "A customer email has been queued for delivery." : result.emailNotification === "sent" ? "The cancellation email has already been sent." : "No customer email is queued. Contact the customer directly.";
+      const delivery = result.emailNotification === "queued" ? "A customer email has been queued for delivery." : result.emailNotification === "sent" ? "The cancellation email has already been sent." : result.emailNotification === "failed" ? "The cancellation email could not be delivered. Contact the customer directly." : "No customer email is queued. Contact the customer directly.";
       setNotice(`Appointment cancelled. ${delivery}`);
       setCancelling(null); setLoading(true); setRefreshCount(value => value + 1);
       return true;

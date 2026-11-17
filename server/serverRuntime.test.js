@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { createServer } from "node:http";
+import { EventEmitter, once } from "node:events";
+import { createServer, request } from "node:http";
+import { setImmediate } from "node:timers/promises";
+import { createApp } from "./app.js";
+import { createOperationTracker } from "./operationTracker.js";
 import { createServerRuntime, listen } from "./serverRuntime.js";
 
 function deferred() {
@@ -84,6 +87,92 @@ test("signal-triggered shutdown exits at its deadline when a dependency will not
   assert.equal(f.processRef.exitCode, 1);
   assert.equal(f.events.includes("exit:1"), true);
 });
+
+test("an unfinished application handler retains the deadline and nonzero signal exit after HTTP has closed", async () => {
+  const application = deferred();
+  const f = fixture({ graceMs: 15, stopApplicationWork: () => application.promise });
+  f.runtime.installSignalHandlers();
+  f.processRef.emit("SIGTERM");
+  assert.deepEqual(await f.runtime.shutdown(), { ok: false, timedOut: true });
+  await Promise.resolve();
+  assert.equal(f.events.includes("database-close"), false);
+  assert.equal(f.processRef.exitCode, 1);
+  assert.equal(f.events.includes("exit:1"), true);
+  application.resolve();
+});
+
+for (const operation of ["booking", "review", "customer cancellation"]) {
+  test(`shutdown waits for an aborted ${operation} handler and email acknowledgement before disconnecting`, { timeout: 5000 }, async t => {
+    const entered = deferred();
+    const mutation = deferred();
+    const mail = deferred();
+    const tracker = createOperationTracker();
+    const events = [];
+    const id = "123456789012345678901234";
+    let connected = true;
+    let handlerEntered = false;
+    const saved = { id, _id: id, status: "pending", service: "Oil Change", scheduling: {} };
+    const mutate = async () => {
+      handlerEntered = true;
+      events.push("reservation-written");
+      entered.resolve();
+      await mutation.promise;
+      assert.equal(connected, true, "MongoDB must remain available for the second mutation write");
+      events.push("appointment-written");
+      return saved;
+    };
+    const pass = (_req, _res, next) => next();
+    const app = createApp({ Appointment: { db: { readyState: 1 } }, operationTracker: tracker,
+      scheduling: { createAppointment: mutate, reviewAppointment: mutate, cancelAppointment: mutate,
+        getCancellationEligibility: () => ({ canCancel: true, message: "Synthetic eligibility" }) },
+      auth: { login: pass, requireAuth: pass, requireCsrf: pass, session: pass, activity: pass, logout: pass },
+      management: { requireOrigin() {}, requireCsrf() {}, authorize: async () => ({ id, appointment: saved }) },
+      notifications: { enabled: false, kick() {} },
+    });
+    const server = createServer(app);
+    let socketClosed;
+    server.once("connection", socket => { socketClosed = once(socket, "close"); });
+    const runtime = createServerRuntime({ server, graceMs: 1000,
+      stopApplicationWork: tracker.stop,
+      stopNotifications: () => mail.promise,
+      disconnectDatabase: () => { connected = false; events.push("database-close"); },
+    });
+    t.after(async () => {
+      mutation.resolve();
+      mail.resolve();
+      await runtime.shutdown();
+    });
+    await listen(server, { host: "127.0.0.1", port: 0 });
+    const path = operation === "booking" ? "/api/appointments" : operation === "review" ? `/api/mechanic/appointments/${id}` : `/api/customer/appointments/${id}/cancel`;
+    const body = operation === "booking" ? { name: "Synthetic Customer", email: "synthetic@example.invalid", phone: "(555) 555-1234", vehicle: "2018 Honda Civic", service: "Oil Change", date: "2030-01-08", time: "10:30", notes: "" } : operation === "review" ? { status: "confirmed" } : {};
+    const client = request({ host: "127.0.0.1", port: server.address().port, path,
+      method: operation === "review" ? "PATCH" : "POST", headers: { "Content-Type": "application/json" } });
+    t.after(() => client.destroy());
+    client.on("error", () => {});
+    client.once("response", res => {
+      res.resume();
+      assert.equal(handlerEntered, true, `synthetic request reached its handler (HTTP ${res.statusCode})`);
+    });
+    client.end(JSON.stringify(body));
+    await entered.promise;
+    client.destroy();
+    await socketClosed;
+    let completed = false;
+    const stopping = runtime.shutdown();
+    stopping.then(() => { completed = true; });
+    assert.equal(tracker.isAccepting(), false);
+    await setImmediate();
+    assert.equal(connected, true);
+    assert.equal(completed, false);
+    mutation.resolve();
+    await tracker.stop();
+    assert.deepEqual(events, ["reservation-written", "appointment-written"]);
+    assert.equal(connected, true, "email acknowledgement must also settle before disconnect");
+    mail.resolve();
+    assert.deepEqual(await stopping, { ok: true, timedOut: false });
+    assert.deepEqual(events, ["reservation-written", "appointment-written", "database-close"]);
+  });
+}
 
 test("the HTTP listener supports an explicit bind and resolves after a socket is listening", async t => {
   const server = createServer((_req, res) => res.end("synthetic listener"));

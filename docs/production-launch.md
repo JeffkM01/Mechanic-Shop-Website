@@ -6,6 +6,8 @@ This runbook prepares a deployment. It does not authorize a purchase, publish a 
 
 Before accepting customer bookings, Edward must approve the public contact details, actual services and estimates, hours/breaks/closures, simultaneous capacity, and cancellation policy. Privacy and policy drafts must match the selected providers and operating practices. Keep unresolved details as launch blockers rather than guessing them.
 
+Record the reviewed public contact details, provider descriptions, retention/request instructions, effective dates, and approval flags in `shared/businessProfile.json`, then validate and build that reviewed revision. This file is included in the public website; it must never contain credentials or private customer information. A valid approved profile is supported; leaving the shipped draft values in place keeps the offline launch check blocked.
+
 Run `npm run check:launch` using the intended runtime environment. This offline configuration check does not load `.env`, connect to a database, send email, verify TLS, or prove a successful backup/restore. Resolve its configuration blockers and separately complete its unverified operational items. Do not paste credentials into issues or chat.
 
 ## Hosting shape
@@ -60,7 +62,7 @@ Do not put deployment tokens, MongoDB credentials, SMTP credentials, or the mana
 - Run one API replica and one email dispatcher. Clustering/autoscaling can break process-local staff sessions and duplicate email delivery; a shared session/worker-claim design would be a separate implementation.
 - Restarts discard staff sessions and require sign-in again. Customer-management sessions remain Mongo-backed, bounded by their grant/session lifetime and the stable external key.
 - Keep `APPOINTMENT_MANAGEMENT_SECRET` stable across ordinary deployments. Rotating it deliberately invalidates existing management links and customer sessions; do not regenerate it for every build.
-- Email remains at least once: a provider can accept a message before the MongoDB acknowledgement fails, causing a later retry. Already in-flight messages cannot be recalled. See [notification semantics](customer-appointment-management.md#notification-semantics).
+- Email retries use persisted per-kind backoff from one minute up to 24 hours. Known permanent recipient failures become `failed` and require reviewed operator action. A provider can accept a message before its MongoDB acknowledgement fails, causing a later duplicate; successful delivery is not guaranteed and already in-flight messages cannot be recalled. See [notification semantics and recovery](customer-appointment-management.md#notification-semantics).
 - MongoDB persists outside the app container. Follow the [backup and restore runbook](backup-and-restore.md) to preserve appointments and scheduling state consistently. The application container filesystem is not a database backup.
 
 ## Runtime configuration
@@ -82,6 +84,8 @@ Supply server-only secrets through the host's private environment/secret store.
 | `TRUST_PROXY` | Defaults to `false`. If the reviewed topology needs forwarded client IPs, use only the actual trusted proxy IP/CIDR allowlist; blanket trust and hop counts are rejected. |
 
 Configure proxy trust only for the actual trusted proxy networks supported by the runtime. Do not use unrestricted trust or a guessed hop count to accept arbitrary forwarded client IPs. Verify the real proxy chain, client IP handling, login throttling, HTTPS, and Secure cookies before opening bookings.
+
+Staff login limits each client IP to five failed or in-flight password checks in a fixed 15-minute window. A slot is reserved before hashing, so concurrent attempts share that budget. A success clears completed failures while preserving other in-flight checks; failures that finish later still count. HTTP 429 means the budget is exhausted, even for a subsequently correct password, and rejected requests do not extend the window. This application limiter is process-local and does not replace trusted ingress controls.
 
 Configure and test abuse controls at the selected public ingress, including rate limiting for `POST /api/appointments`. Staff login has application throttling; the public booking route does not currently impose a booking-spam quota. Choose limits for the actual shop traffic and trusted client-IP topology, and verify that legitimate submissions receive clear retry behavior. Do not assume the host enables these controls automatically.
 
@@ -130,7 +134,9 @@ Internal `HOST=0.0.0.0` lets container ingress reach Node. The external loopback
 
 `GET /api/health/live` is process liveness. Configure the chosen host's readiness checks, restart policy, external uptime notification, and application error alerting explicitly. Adding endpoints does not provision monitoring or prove that an alert reaches Edward.
 
-SIGTERM/SIGINT stops admission of new work and future queue sweeps, drains supported in-flight work within the deadline, and closes MongoDB. Give the platform enough termination grace. Staff sign in again after deployment; durable appointments and notification intents remain in MongoDB. Do not run former and replacement processes as concurrent dispatchers during a rolling update.
+Review pending-notification age, saved retry deadlines, and terminal `failed` flags through protected operator tooling. Database readiness does not verify SMTP or report a message as delivered. Retry metadata contains only fixed failure categories and bounded history, but it is private operational data and must remain outside public API responses and log uploads. See the [notification recovery procedure](customer-appointment-management.md#notification-semantics) before requeueing a failed message; there is no automatic replay or retry dashboard.
+
+SIGTERM/SIGINT immediately stops new API-handler admission and future queue sweeps. Shutdown waits for admitted asynchronous API operations, HTTP closure, and the current email send/acknowledgement before closing MongoDB. An admitted operation stays tracked even if its client disconnects or the response has already ended; a closed socket does not prove a booking or cancellation has finished. Give the platform enough termination grace. If the configured deadline expires, the process force-closes sockets and exits unsuccessfully; treat interrupted work and uncertain mail acknowledgement as requiring reconciliation after restart. Staff sign in again after deployment; durable appointments and notification intents remain in MongoDB. Do not run former and replacement processes as concurrent dispatchers during a rolling update.
 
 Use fixed failure categories and safe identifiers where necessary in logs. Do not enable body/header logging for passwords, cookies, management exchanges, or appointment forms. Exclude customer fields, emailed bearer fragments, backups, and connection strings from analytics/error-reporting payloads.
 

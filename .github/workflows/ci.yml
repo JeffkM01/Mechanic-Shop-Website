@@ -28,6 +28,7 @@ jobs:
         ports:
           - 27017:27017
         options: >-
+          --ulimit nofile=16384:16384
           --health-cmd "mongosh --quiet --eval 'if (!db.adminCommand({ping:1}).ok) quit(1)'"
           --health-interval 10s
           --health-timeout 5s

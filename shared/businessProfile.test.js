@@ -1,35 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { businessProfile, businessProfileLaunchIssues, validateBusinessProfile } from "./businessProfile.js";
+import { approvedBusinessProfile, draftBusinessProfile } from "../tests/business-profile-fixtures.js";
 
-const copy = () => structuredClone(businessProfile);
+const project = fileURLToPath(new URL("../", import.meta.url));
+const approvedFixture = approvedBusinessProfile;
+const copy = draftBusinessProfile;
 
-// Only pure validation uses this synthetic profile. Nothing is published,
-// delivered to these addresses, or treated as Edward's actual business data.
-function approvedFixture() {
-  return {
-    schemaVersion: 1,
-    name: "Synthetic Auto Test Shop",
-    contact: { confirmed: true, phone: "202-555-0148", email: "appointments@synthetic-shop-unit-check.net", addressLines: ["Synthetic unit-test address", "Not a real shop location"] },
-    privacy: {
-      approved: true, effectiveDate: "2028-02-29", hostingProvider: "Synthetic test host", databaseProvider: "Synthetic test database provider", emailProvider: "Synthetic test mail provider",
-      retentionPolicy: "Test-only reviewed retention text, not a shop policy.",
-      requestInstructions: "Test-only contact instructions, not a customer process.",
-    },
-    cancellation: { approved: true, effectiveDate: "2028-02-29", policy: "until_start_no_fee" },
-  };
-}
+test("the checked-in profile is valid whether business details are draft or approved", () => {
+  assert.deepEqual(validateBusinessProfile(businessProfile), businessProfile);
+  assert.deepEqual(businessProfileLaunchIssues(), businessProfileLaunchIssues(businessProfile));
+});
 
-test("the shipped profile keeps unknown contacts and unapproved policies as explicit launch blockers", () => {
-  assert.equal(businessProfile.contact.confirmed, false);
-  assert.equal(businessProfile.contact.phone, null);
-  assert.equal(businessProfile.contact.email, null);
-  assert.deepEqual(businessProfile.contact.addressLines, []);
-  assert.equal(businessProfile.privacy.approved, false);
-  assert.equal(businessProfile.privacy.hostingProvider, null);
-  assert.equal(businessProfile.privacy.retentionPolicy, null);
-  assert.equal(businessProfile.cancellation.approved, false);
-  const codes = businessProfileLaunchIssues().map(issue => issue.code);
+test("an explicit draft profile keeps unknown contacts and unapproved policies as launch blockers", () => {
+  const source = draftBusinessProfile();
+  assert.deepEqual(validateBusinessProfile(source), source);
+  const codes = businessProfileLaunchIssues(source).map(issue => issue.code);
   for (const code of ["SHOP_CONTACT_UNCONFIRMED", "PRIVACY_NOTICE_UNAPPROVED", "PRIVACY_HOSTING_PROVIDER_UNCONFIRMED", "PRIVACY_RETENTION_POLICY_UNCONFIRMED", "CANCELLATION_POLICY_UNAPPROVED", "CANCELLATION_DATE_UNCONFIRMED"]) assert.ok(codes.includes(code), code);
 });
 
@@ -38,8 +30,30 @@ test("complete owner-approved synthetic configuration passes profile checks with
   const validated = validateBusinessProfile(source);
   assert.deepEqual(validated, source);
   assert.deepEqual(businessProfileLaunchIssues(source), []);
-  assert.equal(businessProfile.contact.confirmed, false);
-  assert.equal(businessProfile.privacy.approved, false);
+  assert.deepEqual(source, approvedFixture());
+});
+
+test("unit suite accepts an approved source profile", async t => {
+  const root = await mkdtemp(join(tmpdir(), "eds-approved-profile-unit-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await Promise.all(["shared", "src/utils", "server", "tests"].map(directory => mkdir(join(root, directory), { recursive: true })));
+  await Promise.all([
+    cp(join(project, "shared"), join(root, "shared"), { recursive: true }),
+    cp(join(project, "src/utils"), join(root, "src/utils"), { recursive: true }),
+    cp(join(project, "server/schedulingRules.js"), join(root, "server/schedulingRules.js")),
+    cp(join(project, "tests/business-profile-fixtures.js"), join(root, "tests/business-profile-fixtures.js")),
+  ]);
+  await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
+  // Only this disposable copy receives approved synthetic values. The source
+  // profile and its owner's approval state are never modified by the test.
+  await writeFile(join(root, "shared/businessProfile.json"), JSON.stringify(approvedFixture()));
+  const unitFiles = (await Promise.all(["shared", "src/utils"].map(async directory =>
+    (await readdir(join(root, directory))).filter(file => file.endsWith(".test.js")).map(file => join(directory, file))
+  ))).flat();
+  const result = spawnSync(process.execPath, ["--test", "--test-skip-pattern=^unit suite accepts an approved source profile$", ...unitFiles], {
+    cwd: root, env: {}, encoding: "utf8", timeout: 30_000,
+  });
+  assert.equal(result.status, 0, `${result.error || ""}\n${result.stdout}\n${result.stderr}`);
 });
 
 test("public profile fields are strict and errors never echo extra secret values", () => {

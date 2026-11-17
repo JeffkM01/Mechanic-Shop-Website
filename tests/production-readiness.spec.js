@@ -1,6 +1,8 @@
 import axe from "axe-core";
 import { test, expect } from "./cancellation-fixture.js";
-import { businessProfile } from "../shared/businessProfile.js";
+import { businessProfile, validateBusinessProfile } from "../shared/businessProfile.js";
+import { approvedBusinessProfile, draftBusinessProfile } from "./business-profile-fixtures.js";
+import { formatBookingDate } from "../src/utils/bookingDates.js";
 
 // Only the synthetic isolated Mongo/Express fixture is used. No .env, normal
 // shop database, production origin, or SMTP transport is loaded by this suite.
@@ -9,6 +11,60 @@ test.setTimeout(60_000);
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DRAFT = "Draft — awaiting Edward’s approval";
+
+async function assertContactDetails(page, profile) {
+  if (!profile.contact.confirmed) {
+    for (const value of ["Phone number to be confirmed", "Public email to be confirmed", "Shop address to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
+    await expect(page.locator("main a[href^='tel:'], main a[href^='mailto:']")).toHaveCount(0);
+  } else {
+    await expect(page.getByRole("link", { name: profile.contact.phone, exact: true })).toHaveAttribute("href", /^tel:\+/);
+    await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(profile.contact.email)}`);
+    for (const line of profile.contact.addressLines) await expect(page.locator("main")).toContainText(line);
+    await expect(page.getByText("Contact details are being confirmed.", { exact: true })).toHaveCount(0);
+  }
+}
+
+async function assertPolicyNotice(page, policy) {
+  if (!policy.approved) {
+    await expect(page.getByText(DRAFT, { exact: true })).toBeVisible();
+    await expect(page.locator("main .policy-effective")).toHaveCount(0);
+  } else {
+    await expect(page.getByText(DRAFT, { exact: true })).toHaveCount(0);
+    const effective = page.locator("main .policy-effective time");
+    await expect(effective).toHaveAttribute("datetime", policy.effectiveDate);
+    await expect(effective).toHaveText(formatBookingDate(policy.effectiveDate));
+  }
+}
+
+async function assertPrivacyProviders(page, profile) {
+  const providers = [
+    ["Website and API hosting", profile.privacy.hostingProvider, "Hosting provider to be confirmed before launch."],
+    ["Appointment database", profile.privacy.databaseProvider, "Appointment records use MongoDB. The production database provider and location are awaiting confirmation."],
+    ["Email delivery", profile.privacy.emailProvider, "Email provider to be confirmed before launch."],
+  ];
+  for (const [label, configured, fallback] of providers) {
+    const row = page.locator(".policy-provider-list > div").filter({ has: page.getByText(label, { exact: true }) });
+    await expect(row.locator("dd")).toHaveText(configured || fallback);
+  }
+}
+
+async function useSyntheticProfile(page, profile) {
+  const validated = validateBusinessProfile(profile);
+  let supplied = false;
+  // Replace only the browser's Vite JSON module response, before navigation.
+  // Production components still perform their usual schema validation; neither
+  // the source profile nor any real business approval is changed.
+  await page.route("**/shared/businessProfile.json*", route => {
+    supplied = true;
+    return route.fulfill({ contentType: "text/javascript", body: `export default ${JSON.stringify(validated)};` });
+  });
+  // These rendering cases need no database. Prevent every API request from
+  // reaching a normal development server, including background catalog reads.
+  await page.route("**/api/**", route => new URL(route.request().url()).pathname === "/api/shop-hours"
+    ? route.fulfill({ json: { verified: false, timezone: "America/Chicago", weeklyHours: null, breaks: [], closedDates: [] } })
+    : route.fulfill({ status: 503, json: { error: "API unavailable in the isolated profile-rendering fixture." } }));
+  return () => expect(supplied, "the rendered profile must come from the synthetic browser fixture").toBe(true);
+}
 
 async function openContact(page) {
   const reply = page.waitForResponse(response => new URL(response.url()).pathname === "/api/shop-hours");
@@ -51,19 +107,12 @@ async function capture(page, testInfo, name) {
   await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
-test("keeps unconfirmed contact information and operating hours honest without fabricated shop details", async ({ page, shop }) => {
+test("renders configured contact information and keeps unverified operating hours unadvertised", async ({ page, shop }) => {
   const response = await openContact(page);
   expect(response.status()).toBe(200);
   expect(response.headers()["cache-control"]).toContain("no-store");
   expect(await response.json()).toMatchObject({ verified: false, weeklyHours: null, breaks: [], closedDates: [] });
-  if (!businessProfile.contact.confirmed) {
-    for (const value of ["Phone number to be confirmed", "Public email to be confirmed", "Shop address to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
-    await expect(page.locator("main a[href^='tel:'], main a[href^='mailto:']")).toHaveCount(0);
-  } else {
-    await expect(page.locator("main")).toContainText(businessProfile.contact.phone);
-    await expect(page.locator("main")).toContainText(businessProfile.contact.email);
-    for (const line of businessProfile.contact.addressLines) await expect(page.locator("main")).toContainText(line);
-  }
+  await assertContactDetails(page, businessProfile);
   await expect(page.locator("main")).not.toContainText("(555) 010-2020");
   await expect(page.locator("main")).not.toContainText("hello@edsautoshop.example");
   await expect(page.locator("main")).not.toContainText("[Street address]");
@@ -125,7 +174,7 @@ test("fails closed when saved shop hours cannot be read or verified instead of r
   await expect(hours(page)).toContainText(/could not be verified/i);
 });
 
-test("opens the privacy information from the footer without claiming an unapproved policy or provider guarantees", async ({ page, shop }) => {
+test("opens configured privacy information from the footer without inventing provider guarantees", async ({ page, shop }) => {
   await shop.scheduling.getSettings();
   await page.goto("/");
   const link = page.locator(".site-footer").getByRole("link", { name: "Privacy information", exact: true });
@@ -135,14 +184,13 @@ test("opens the privacy information from the footer without claiming an unapprov
   await expect(page.getByRole("heading", { name: "Privacy information", exact: true })).toBeVisible();
   await expect(page).toHaveTitle(/Privacy information.*Ed/i);
   await expect(page.locator("#main-content")).toBeFocused();
-  if (!businessProfile.privacy.approved) await expect(page.getByText(DRAFT, { exact: true })).toBeVisible();
-  await expect(page.locator("main")).toContainText(/MongoDB/);
-  await expect(page.locator("main")).toContainText(/Brevo/);
+  await assertPolicyNotice(page, businessProfile.privacy);
+  await assertPrivacyProviders(page, businessProfile);
   await expect(page.locator("main")).toContainText(/email|phone/i);
   await expect(page.locator("main")).not.toContainText(/Vercel never sells|providers never share|guaranteed.*privacy/i);
 });
 
-test("opens the cancellation policy as the actual provisional until-start policy without inventing fees or rescheduling", async ({ page, shop }) => {
+test("opens the configured until-start cancellation policy without inventing fees or rescheduling", async ({ page, shop }) => {
   await shop.scheduling.getSettings();
   await page.goto("/");
   const link = page.locator(".site-footer").getByRole("link", { name: "Cancellation policy", exact: true });
@@ -151,7 +199,7 @@ test("opens the cancellation policy as the actual provisional until-start policy
   await expect(page).toHaveURL(/\/cancellation-policy$/);
   await expect(page.getByRole("heading", { name: "Cancellation policy", exact: true })).toBeVisible();
   await expect(page).toHaveTitle(/Cancellation policy.*Ed/i);
-  if (!businessProfile.cancellation.approved) await expect(page.getByText(DRAFT, { exact: true })).toBeVisible();
+  await assertPolicyNotice(page, businessProfile.cancellation);
   await expect(page.locator("main")).toContainText(/pending/);
   await expect(page.locator("main")).toContainText(/confirmed/);
   await expect(page.locator("main")).toContainText(/start/);
@@ -159,6 +207,37 @@ test("opens the cancellation policy as the actual provisional until-start policy
   await expect(page.getByRole("button", { name: /reschedule/i })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /reschedule/i })).toHaveCount(0);
 });
+
+for (const [state, fixture] of [["draft", draftBusinessProfile], ["approved", approvedBusinessProfile]]) {
+  test(`renders ${state} synthetic contact and policies through the actual public routes`, async ({ page }) => {
+    const profile = fixture();
+    const assertSupplied = await useSyntheticProfile(page, profile);
+    await openContact(page);
+    assertSupplied();
+    await assertContactDetails(page, profile);
+    await assertUnconfirmedHours(page);
+
+    await page.locator(".site-footer").getByRole("link", { name: "Privacy information", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Privacy information", exact: true })).toBeVisible();
+    await assertPolicyNotice(page, profile.privacy);
+    await assertPrivacyProviders(page, profile);
+    if (profile.privacy.approved) {
+      await expect(page.locator("main")).toContainText(profile.privacy.retentionPolicy);
+      await expect(page.locator("main")).toContainText(profile.privacy.requestInstructions);
+      await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toBeVisible();
+    } else {
+      await expect(page.locator("main")).toContainText("The shop has not yet confirmed its retention period and deletion process.");
+      await expect(page.locator("main")).toContainText("The process for requesting access, corrections, or deletion of personal information is awaiting the shop's confirmation.");
+    }
+
+    await page.locator(".site-footer").getByRole("link", { name: "Cancellation policy", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Cancellation policy", exact: true })).toBeVisible();
+    await assertPolicyNotice(page, profile.cancellation);
+    await expect(page.locator("main")).toContainText(profile.cancellation.approved
+      ? "There is no cancellation fee under this policy."
+      : "Edward must approve this policy before public launch.");
+  });
+}
 
 test("keeps contact and policy pages accessible and readable at narrow widths and 200 percent text size", async ({ page, shop }, testInfo) => {
   test.setTimeout(120_000);

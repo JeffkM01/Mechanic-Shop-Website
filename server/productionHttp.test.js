@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./app.js";
+import { createOperationTracker } from "./operationTracker.js";
 
 const APP_MARKER = "isolated-built-frontend-test";
 const INDEX = `<!doctype html><html><body><main>${APP_MARKER}</main><script src="/assets/app-BUILD123.js"></script></body></html>`;
@@ -27,7 +28,7 @@ function dependencies(state, overrides = {}) {
 
 // Every case uses temporary synthetic build files and an ephemeral listener.
 // No database, application .env, customer record, or SMTP transport is loaded.
-async function fixture(t, { frontend = true, ...overrides } = {}) {
+async function fixture(t, { frontend = true, operationTracker, ...overrides } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "eds-production-http-"));
   const state = { database: true, ready: true, bookings: 0, logs: [] };
   let server;
@@ -42,6 +43,7 @@ async function fixture(t, { frontend = true, ...overrides } = {}) {
   await writeFile(join(directory, "index.html"), INDEX);
   await writeFile(join(directory, "assets", "app-BUILD123.js"), "/* synthetic built asset */");
   const app = createApp({ ...dependencies(state, overrides), frontendDirectory: frontend ? directory : null,
+    ...(operationTracker ? { operationTracker } : {}),
     ...(overrides.trustProxy ? { trustProxy: overrides.trustProxy } : {}) });
   server = await new Promise((resolve, reject) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -82,6 +84,26 @@ test("draining returns failing health and refuses API reads and writes before re
   const live = await fetch(`${f.origin}/api/health/live`);
   assert.equal(live.status, 503);
   assert.deepEqual(await live.json(), { status: "draining" });
+  for (const [path, options] of [["/api/services", {}], ["/api/appointments", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }]]) {
+    const response = await fetch(`${f.origin}${path}`, options);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, "SERVICE_DRAINING");
+    sensitiveHeaders(response);
+  }
+  assert.equal(f.state.bookings, 0);
+});
+
+test("closing application admission fails health and rejects new reads and writes without relying on socket state", async t => {
+  const operationTracker = createOperationTracker();
+  const f = await fixture(t, { operationTracker });
+  await operationTracker.stop();
+  assert.equal(f.state.ready, true);
+  for (const path of ["/api/health", "/api/health/live"]) {
+    const response = await fetch(`${f.origin}${path}`);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).status, "draining");
+    sensitiveHeaders(response);
+  }
   for (const [path, options] of [["/api/services", {}], ["/api/appointments", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }]]) {
     const response = await fetch(`${f.origin}${path}`, options);
     assert.equal(response.status, 503);

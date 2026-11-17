@@ -19,6 +19,11 @@ const sample = {
 
 const emailOptions = { from: config.MAIL_FROM, mechanicEmail: config.MECHANIC_NOTIFICATION_EMAIL };
 
+function retryClock() {
+  let clock = Date.parse("2030-01-01T12:00:00Z");
+  return { now: () => new Date(clock), advance: () => { clock += 60_000; } };
+}
+
 function cancelledRecord(by = "customer", changes = {}) {
   return {
     ...structuredClone(sample), status: "cancelled",
@@ -55,7 +60,7 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
     findById(id) {
       let privateManagement = false;
       return {
-        select(fields) { privateManagement = fields === "+management"; onSelect?.(fields); return this; },
+        select(fields) { privateManagement = fields.split(" ").includes("+management"); onSelect?.(fields); return this; },
         async lean() {
           beforeFreshRead?.(id);
           const record = records.find(item => item._id === id);
@@ -71,8 +76,11 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
       const get = (field) => field.split(".").reduce((value, key) => value?.[key], record);
       if (!record || !Object.entries(query).every(([field, value]) => get(field) === value)) return { modifiedCount: 0 };
       for (const [field, value] of Object.entries(change.$set)) {
-        const kind = field.split(".").at(-1);
-        record.notificationState[kind] = value;
+        const parts = field.split(".");
+        const key = parts.pop();
+        let target = record;
+        for (const part of parts) target = target[part] ??= {};
+        target[key] = structuredClone(value);
       }
       return { modifiedCount: 1 };
     },
@@ -107,6 +115,7 @@ test("email service is disabled when credentials are absent", async () => {
 });
 
 test("mailer failure leaves pending status and a later sweep retries", async () => {
+  const clock = retryClock();
   const records = [{ ...sample, notificationState: { ...sample.notificationState } }];
   const sent = [];
   let failOnce = true;
@@ -118,11 +127,12 @@ test("mailer failure leaves pending status and a later sweep retries", async () 
   };
   const logger = { error() {} };
   const service = await createEmailNotifications({
-    Appointment: fakeAppointmentModel(records), env: config, transport, logger,
+    Appointment: fakeAppointmentModel(records), env: config, transport, logger, now: clock.now,
   });
   await service.processPending();
   assert.equal(records[0].notificationState.requestCustomer, "pending");
   assert.equal(records[0].notificationState.requestMechanic, "sent");
+  clock.advance();
   await service.processPending();
   assert.equal(records[0].notificationState.requestCustomer, "sent");
   assert.equal(sent.length, 2);
@@ -183,11 +193,12 @@ test("an old automatic receipt still queued after its decision was sent is suppr
 });
 
 test("automatic decision retry keeps receipts suppressed and preserves the mechanic notice", async () => {
+  const clock = retryClock();
   const record = { ...sample, status: "confirmed", scheduling: { confirmationSource: "automatic" }, notificationState: { requestCustomer: "suppressed", requestMechanic: "pending", decisionCustomer: "pending" } };
   const sent = [];
   let failOnce = true;
   const service = await createEmailNotifications({
-    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} },
+    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} }, now: clock.now,
     transport: { async sendMail(message) {
       if (message.to === sample.email && failOnce) { failOnce = false; throw new Error("Temporary mail failure"); }
       sent.push(message);
@@ -195,6 +206,7 @@ test("automatic decision retry keeps receipts suppressed and preserves the mecha
   });
   await service.processPending();
   assert.equal(record.notificationState.decisionCustomer, "pending");
+  clock.advance();
   await service.processPending();
   await service.processPending();
   assert.equal(sent.filter(message => message.to === sample.email).length, 1);
@@ -291,6 +303,7 @@ test("legacy declined emails never invent a reason from a missing or partial dec
 });
 
 test("decline email failures preserve the saved decision and reason, retry the same flag, and do not replay after sent", async () => {
+  const clock = retryClock();
   const record = {
     ...sample, status: "declined",
     decline: { category: "outside_capabilities", explanation: "Your repair requires specialist equipment that our shop does not have.", declinedAt: "2026-11-05T14:00:00Z", source: "mechanic" },
@@ -300,7 +313,7 @@ test("decline email failures preserve the saved decision and reason, retry the s
   const attempts = [];
   const deliveries = [];
   const service = await createEmailNotifications({
-    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} },
+    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} }, now: clock.now,
     transport: { async sendMail(message) {
       attempts.push(message);
       if (attempts.length === 1) throw new Error("Synthetic SMTP failure before acceptance");
@@ -310,6 +323,7 @@ test("decline email failures preserve the saved decision and reason, retry the s
   await service.processPending();
   assert.deepEqual({ status: record.status, decline: record.decline }, originalDecision);
   assert.equal(record.notificationState.decisionCustomer, "pending");
+  clock.advance();
   await Promise.all([service.processPending(), service.processPending()]);
   await service.processPending();
   assert.equal(record.notificationState.decisionCustomer, "sent");
@@ -439,7 +453,7 @@ test("legacy customer addresses cannot be parsed as recipient lists, display nam
   }
 });
 
-test("unsafe legacy recipients leave queues pending without sending private appointment contents or undoing the decision", async () => {
+test("unsafe legacy recipients retain failed delivery history without sending private contents or undoing the decision", async () => {
   const record = {
     ...sample, email: "customer@example.test,unrelated@example.test", status: "declined",
     decline: { category: "other", explanation: "The requested specialist service cannot be performed by the shop." },
@@ -455,12 +469,14 @@ test("unsafe legacy recipients leave queues pending without sending private appo
   });
   await service.processPending();
   await service.processPending();
-  assert.deepEqual(record, before);
+  assert.deepEqual({ ...record, notificationState: before.notificationState, notificationRetry: undefined }, { ...before, notificationRetry: undefined });
   assert.equal(sent.length, 0, "a malformed To or Reply-To value must never reach the transport");
-  assert.equal(record.notificationState.decisionCustomer, "pending");
+  assert.equal(record.notificationState.decisionCustomer, "failed");
+  assert.equal(record.notificationState.requestMechanic, "failed");
+  assert.equal(record.notificationRetry.decisionCustomer.lastFailureCode, "invalid-recipient");
   assert.equal(record.status, "declined");
-  assert.equal(logs.length, 4);
-  assert.ok(logs.every(message => message.includes("delivery will be retried")));
+  assert.equal(logs.length, 2);
+  assert.ok(logs.every(message => message.includes("recipient needs review")));
   assert.ok(logs.every(message => !message.includes(record.email) && !message.includes(record.decline.explanation)));
 });
 
@@ -569,13 +585,14 @@ test("customer cancellation queues deliver once each, while mechanic cancellatio
 });
 
 test("failed cancellation delivery preserves durable cancellation and retries saved intent without new events", async () => {
+  const clock = retryClock();
   const record = cancelledRecord();
   const saved = structuredClone({ status: record.status, cancellation: record.cancellation });
   const attempts = [];
   const deliveries = [];
   let failCustomer = true;
   const service = await createEmailNotifications({
-    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} },
+    Appointment: fakeAppointmentModel([record]), env: config, logger: { error() {} }, now: clock.now,
     transport: { async sendMail(message) {
       attempts.push(message);
       if (message.to === sample.email && failCustomer) { failCustomer = false; throw new Error("Synthetic cancellation SMTP outage"); }
@@ -586,6 +603,7 @@ test("failed cancellation delivery preserves durable cancellation and retries sa
   assert.deepEqual({ status: record.status, cancellation: record.cancellation }, saved);
   assert.equal(record.notificationState.cancellationCustomer, "pending");
   assert.equal(record.notificationState.cancellationMechanic, "sent");
+  clock.advance();
   await Promise.all([service.processPending(), service.processPending()]);
   await service.processPending();
   assert.equal(record.notificationState.cancellationCustomer, "sent");
@@ -677,6 +695,7 @@ test("a confirmation already handed to transport may finish before the saved can
 });
 
 test("management links use private fresh metadata without persisting raw credentials or exposing them in errors", async () => {
+  const clock = retryClock();
   const bearer = "synthetic-private-bearer-DO-NOT-LOG";
   const managementLink = `https://shop.example.test/manage-appointment#id=${sample._id}&token=${bearer}`;
   const record = {
@@ -689,7 +708,7 @@ test("management links use private fresh metadata without persisting raw credent
   const before = structuredClone(record.management);
   let fail = true;
   const service = await createEmailNotifications({
-    Appointment: fakeAppointmentModel([record], { onSelect(fields) { selections.push(fields); } }), env: config,
+    Appointment: fakeAppointmentModel([record], { onSelect(fields) { selections.push(fields); } }), env: config, now: clock.now,
     management: { emailLink(appointment) { assert.deepEqual(appointment.management, before); return managementLink; } },
     transport: { async sendMail(message) {
       attempts.push(message);
@@ -704,12 +723,13 @@ test("management links use private fresh metadata without persisting raw credent
   await service.processPending();
   assert.equal(record.notificationState.requestCustomer, "pending");
   assert.ok(attempts[0].text.includes(managementLink));
-  assert.ok(selections.every(fields => fields === "+management"));
+  assert.ok(selections.every(fields => fields === "+management +notificationRetry"));
   assert.ok(logs.length > 0);
   assert.ok(logs.every(message => !message.includes(bearer) && !message.includes("manage-appointment") && !message.includes("Customer:")));
   assert.equal(JSON.stringify(record).includes(bearer), false);
   assert.deepEqual(record.management, before);
   fail = false;
+  clock.advance();
   await service.processPending();
   assert.equal(record.notificationState.requestCustomer, "sent");
   assert.equal(new URL(managementLink).search, "");
@@ -717,6 +737,7 @@ test("management links use private fresh metadata without persisting raw credent
 });
 
 test("provider acceptance followed by a failed cancellation acknowledgement retries the same durable intent", async () => {
+  const clock = retryClock();
   const record = cancelledRecord("mechanic");
   const before = structuredClone(record.cancellation);
   const model = fakeAppointmentModel([record]);
@@ -731,12 +752,13 @@ test("provider acceptance followed by a failed cancellation acknowledgement retr
   };
   const sent = [];
   const service = await createEmailNotifications({
-    Appointment: model, env: config, logger: { error() {} },
+    Appointment: model, env: config, logger: { error() {} }, now: clock.now,
     transport: { async sendMail(message) { sent.push(message); } },
   });
   await service.processPending();
   assert.equal(record.notificationState.cancellationCustomer, "pending");
   assert.equal(sent.length, 1, "the provider accepted the first attempt");
+  clock.advance();
   await service.processPending();
   await service.processPending();
   assert.equal(sent.length, 2, "at-least-once retries may duplicate external delivery after acknowledgement failure");
@@ -747,6 +769,7 @@ test("provider acceptance followed by a failed cancellation acknowledgement retr
 });
 
 test("failed stale-message suppression never sends an obsolete pending receipt or confirmation", async () => {
+  const clock = retryClock();
   const record = cancelledRecord("mechanic", {
     notificationState: { requestCustomer: "pending", requestMechanic: "sent", decisionCustomer: "pending", cancellationCustomer: "pending", cancellationMechanic: "not-applicable" },
   });
@@ -761,7 +784,7 @@ test("failed stale-message suppression never sends an obsolete pending receipt o
   };
   const sent = [];
   const service = await createEmailNotifications({
-    Appointment: model, env: config, logger: { error() {} },
+    Appointment: model, env: config, logger: { error() {} }, now: clock.now,
     transport: { async sendMail(message) { sent.push(message); } },
   });
   await service.processPending();
@@ -770,6 +793,7 @@ test("failed stale-message suppression never sends an obsolete pending receipt o
   assert.equal(record.notificationState.decisionCustomer, "pending");
   assert.equal(record.notificationState.cancellationCustomer, "pending");
   failSuppression = false;
+  clock.advance();
   await service.processPending();
   assert.equal(sent.length, 1);
   assert.match(sent[0].subject, /Appointment Cancelled/);

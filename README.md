@@ -67,6 +67,8 @@ Follow [the production launch guide](docs/production-launch.md). The portable Do
 
 The current staff sessions and email dispatcher are process-local. Use one API process/replica; a restart safely requires staff to sign in again. MongoDB persists appointments, customer-management sessions, scheduling settings, reservations, and notification intent. Do not use the unchanged backend as an autoscaled/serverless function or start several dispatchers.
 
+Email retry deadlines and bounded failure history persist with each appointment. Transient failures back off; permanent recipient failures stop automatic retries for that message kind and require reviewed operator action. A saved appointment does not depend on successful email delivery. See [notification semantics and recovery](docs/customer-appointment-management.md#notification-semantics).
+
 Automatic booking remains disabled by default. Only eligible Wiper Blade Replacement may be confirmed automatically after Edward explicitly verifies the hours and capacity and enables the feature. All other services require mechanic approval. Deployment must not silently change those business settings.
 
 ## Further documentation

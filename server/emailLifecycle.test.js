@@ -33,7 +33,13 @@ function fixture({ sendMail, beforeRead, beforeAcknowledge } = {}) {
       await beforeAcknowledge?.(query);
       const get = path => path.split(".").reduce((value, key) => value?.[key], record);
       if (!Object.entries(query).every(([key, value]) => get(key) === value)) return { modifiedCount: 0 };
-      for (const [path, value] of Object.entries(change.$set)) record.notificationState[path.split(".").at(-1)] = value;
+      for (const [path, value] of Object.entries(change.$set)) {
+        const parts = path.split(".");
+        const key = parts.pop();
+        let target = record;
+        for (const part of parts) target = target[part] ??= {};
+        target[key] = structuredClone(value);
+      }
       return { modifiedCount: 1 };
     },
   };
@@ -134,6 +140,31 @@ test("transport failure during a drain remains retryable without leaking its err
   assert.equal(f.record.notificationState.requestMechanic, "pending");
   assert.equal(f.state.logs.length, 1);
   assert.doesNotMatch(f.state.logs.join(" "), /private SMTP|customer contents/);
+});
+
+test("shutdown waits for a failed delivery's durable retry write before completing its drain", async () => {
+  const writing = deferred(); const saveRetry = deferred();
+  const f = fixture({
+    sendMail: async () => { throw new Error("Synthetic temporary delivery failure"); },
+    beforeAcknowledge: async () => { writing.resolve(); await saveRetry.promise; },
+  });
+  const service = await f.create();
+  const processing = service.processPending();
+  await writing.promise;
+  let drained = false;
+  const stopped = service.stop().then(() => { drained = true; });
+  try {
+    await Promise.resolve();
+    assert.equal(drained, false);
+    assert.equal(f.record.notificationRetry, undefined);
+    saveRetry.resolve();
+    await stopped; await processing;
+    assert.equal(f.record.notificationState.requestCustomer, "pending");
+    assert.equal(f.record.notificationRetry.requestCustomer.failureCount, 1);
+    assert.equal(f.record.notificationRetry.requestCustomer.lastFailureCode, "transport-error");
+    assert.equal(f.record.notificationState.requestMechanic, "pending");
+    assert.equal(f.state.messages.length, 1);
+  } finally { saveRetry.resolve(); await service.stop(); }
 });
 
 test("an explicitly restarted dispatcher resumes remaining intent without replaying an acknowledged message", async t => {
