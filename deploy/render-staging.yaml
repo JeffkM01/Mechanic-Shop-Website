@@ -1,0 +1,51 @@
+# REVIEW TEMPLATE ONLY. Applying a Blueprint creates/deploys resources and can
+# incur charges even though later automatic deployments are off. Approval first.
+# Root Dockerfile; do not set rootDir to server or add an SMTP worker/service.
+services:
+  - type: web
+    name: eds-auto-shop-staging
+    runtime: docker
+    repo: https://github.com/JeffkM01/Mechanic-Shop-Website
+    branch: feat/render-staging-preparation
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: "off"
+    healthCheckPath: /api/health
+    maxShutdownDelaySeconds: 35
+    # Region and the current paid compute quote need owner review in Render.
+    # No persistent disk: MongoDB and encrypted backups live outside this app.
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: SERVE_FRONTEND
+        value: "true"
+      - key: SHUTDOWN_GRACE_MS
+        value: "20000"
+      - key: TRUST_PROXY
+        value: "false"
+      - key: DEPLOYMENT_STAGE
+        value: staging
+      - key: BOOKING_RATE_LIMIT_ENABLED
+        value: "true"
+      - key: BOOKING_RATE_LIMIT_MAX
+        value: "5"
+      - key: BOOKING_RATE_LIMIT_WINDOW_MINUTES
+        value: "15"
+      - key: MONGODB_DATABASE
+        value: eds_staging_preview
+      - key: MONGODB_URI
+        sync: false
+      - key: STAGING_ACCESS_PASSWORD
+        sync: false
+      - key: MECHANIC_ADMIN_PASSWORD
+        sync: false
+      - key: APPOINTMENT_MANAGEMENT_SECRET
+        sync: false
+      - key: PUBLIC_WEBSITE_ORIGIN
+        sync: false
+    # No SMTP fields or mail-provider secrets. Staging also forces SMTP off in
+    # code if a shared environment group accidentally supplies them.

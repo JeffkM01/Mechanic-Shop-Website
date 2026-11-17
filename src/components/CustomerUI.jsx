@@ -43,7 +43,7 @@ export function BookingBanner() {
     <section className="booking-banner section-pad">
       <div className="site-container booking-banner-inner">
         <div><p className="eyebrow">LET’S GET YOU MOVING</p><h2>Your next mile starts here.</h2><p>Tell us what your car needs. We’ll take it from there.</p></div>
-        <div className="booking-banner-action"><Link className="button button-primary" to="/appointment">Request an appointment <Icon name="arrow" /></Link><span>Requests are confirmed by the mechanic.</span></div>
+        <div className="booking-banner-action"><Link className="button button-primary" to="/appointment">Request an appointment <Icon name="arrow" /></Link><span>Check your saved status before visiting.</span></div>
       </div>
     </section>
   );

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import { scryptSync } from "node:crypto";
 import { createMechanicAuth } from "./mechanicAuth.js";
 
 function response() {
@@ -208,4 +210,189 @@ test("HTTP private reads and writes are denied after idle expiry and logout", as
   for (const [path, method] of [["/appointments", "GET"], ["/appointments/1", "PATCH"], ["/activity", "POST"], ["/session", "GET"]]) {
     assert.equal((await fetch(url + path, { method, headers: fresh })).status, 401);
   }
+});
+
+function controlledHasher() {
+  const checks = [];
+  return {
+    checks,
+    hash(candidate, salt, size) {
+      return new Promise((resolve, reject) => {
+        checks.push({
+          fail: () => resolve(Buffer.alloc(size)),
+          succeed: () => resolve(scryptSync(candidate, salt, size)),
+          reject,
+        });
+      });
+    },
+  };
+}
+
+test("a concurrent burst reserves only five password hashes and retains the failure limit", async () => {
+  const hashing = controlledHasher();
+  const auth = createMechanicAuth(password, { hashPassword: hashing.hash });
+  const responses = Array.from({ length: 20 }, response);
+  const logins = responses.map(res => auth.login(request({ password: "wrong" }), res));
+  assert.equal(hashing.checks.length, 5);
+  assert.ok(responses.slice(5).every(res => res.code === 429 && res.cookieValue === null));
+  hashing.checks.forEach(check => check.fail());
+  await Promise.all(logins);
+  assert.deepEqual(responses.slice(0, 5).map(res => res.code), [401, 401, 401, 401, 401]);
+  const ninth = response();
+  await auth.login(request({ password }), ninth);
+  assert.equal(ninth.code, 429);
+  assert.equal(hashing.checks.length, 5, "throttled requests must never start a hash");
+});
+
+test("the fixed window expires exactly fifteen minutes after first admission and throttles do not extend it", async () => {
+  let clock = 1000;
+  let hashes = 0;
+  const auth = createMechanicAuth(password, { now: () => clock,
+    hashPassword: async (_candidate, _salt, size) => { hashes++; return Buffer.alloc(size); },
+  });
+  for (let i = 0; i < 5; i++) {
+    clock = 1000 + i * MINUTE;
+    const rejected = response();
+    await auth.login(request({ password: "wrong" }), rejected);
+    assert.equal(rejected.code, 401);
+  }
+  clock = 1000 + 15 * MINUTE - 1;
+  const limited = response();
+  await auth.login(request({ password }), limited);
+  assert.equal(limited.code, 429);
+  assert.equal(hashes, 5);
+  clock++;
+  const nextWindow = response();
+  await auth.login(request({ password: "wrong" }), nextWindow);
+  assert.equal(nextWindow.code, 401);
+  assert.equal(hashes, 6);
+});
+
+test("success clears completed failures but preserves concurrent hash reservations and later failures", async () => {
+  const hashing = controlledHasher();
+  const auth = createMechanicAuth(password, { hashPassword: hashing.hash });
+  const signedIn = response();
+  const valid = auth.login(request({ password }), signedIn);
+  const invalid = Array.from({ length: 4 }, () => auth.login(request({ password: "wrong" }), response()));
+  assert.equal(hashing.checks.length, 5);
+  hashing.checks[0].succeed();
+  await valid;
+  assert.equal(signedIn.code, 200);
+  assert.ok(signedIn.cookieValue);
+  const oneFreeSlot = response();
+  const fifthPending = auth.login(request({ password: "wrong" }), oneFreeSlot);
+  const full = response();
+  await auth.login(request({ password }), full);
+  assert.equal(full.code, 429, "success cannot erase four still-pending checks");
+  assert.equal(hashing.checks.length, 6);
+  hashing.checks.slice(1).forEach(check => check.fail());
+  await Promise.all([...invalid, fifthPending]);
+  const countedAfterSuccess = response();
+  await auth.login(request({ password }), countedAfterSuccess);
+  assert.equal(countedAfterSuccess.code, 429);
+  assert.equal(middleware(auth.requireAuth, request({ cookie: signedIn.cookieValue })).nextCalled, true);
+});
+
+test("a successful login resets previously settled failures for the next attempt", async () => {
+  const auth = createMechanicAuth(password, {
+    hashPassword: async (candidate, salt, size) => candidate === password ? scryptSync(candidate, salt, size) : Buffer.alloc(size),
+  });
+  for (let i = 0; i < 4; i++) await auth.login(request({ password: "wrong" }), response());
+  const success = response();
+  await auth.login(request({ password }), success);
+  assert.equal(success.code, 200);
+  for (let i = 0; i < 5; i++) {
+    const next = response();
+    await auth.login(request({ password: "wrong" }), next);
+    assert.equal(next.code, 401);
+  }
+  const limited = response();
+  await auth.login(request({ password }), limited);
+  assert.equal(limited.code, 429);
+});
+
+test("pending checks retain their slots across a window boundary", async () => {
+  let clock = 1000;
+  const hashing = controlledHasher();
+  const auth = createMechanicAuth(password, { now: () => clock, hashPassword: hashing.hash });
+  const pending = Array.from({ length: 5 }, () => auth.login(request({ password: "wrong" }), response()));
+  clock += 15 * MINUTE;
+  const stillBusy = response();
+  await auth.login(request({ password }), stillBusy);
+  assert.equal(stillBusy.code, 429);
+  assert.equal(hashing.checks.length, 5);
+  hashing.checks.forEach(check => check.fail());
+  await Promise.all(pending);
+  const failedInNewWindow = response();
+  await auth.login(request({ password }), failedInNewWindow);
+  assert.equal(failedInNewWindow.code, 429);
+  clock += 15 * MINUTE;
+  const reopened = response();
+  const next = auth.login(request({ password: "wrong" }), reopened);
+  assert.equal(hashing.checks.length, 6);
+  hashing.checks[5].fail();
+  await next;
+  assert.equal(reopened.code, 401);
+});
+
+test("hashing exceptions settle reservations while consuming failure budget", async () => {
+  const hashing = controlledHasher();
+  const auth = createMechanicAuth(password, { hashPassword: hashing.hash });
+  for (let i = 0; i < 5; i++) {
+    const rejected = assert.rejects(auth.login(request({ password: "wrong" }), response()), /synthetic hash failure/);
+    hashing.checks[i].reject(new Error("synthetic hash failure"));
+    await rejected;
+  }
+  const limited = response();
+  await auth.login(request({ password }), limited);
+  assert.equal(limited.code, 429);
+  assert.equal(hashing.checks.length, 5);
+});
+
+test("a full IP budget does not consume another IP's hash slots", async () => {
+  const hashing = controlledHasher();
+  const auth = createMechanicAuth(password, { hashPassword: hashing.hash });
+  const pending = Array.from({ length: 5 }, () => auth.login(request({ password: "wrong", ip: "192.0.2.1" }), response()));
+  const other = response();
+  const otherPending = auth.login(request({ password: "wrong", ip: "192.0.2.2" }), other);
+  const limited = response();
+  await auth.login(request({ password, ip: "192.0.2.1" }), limited);
+  assert.equal(limited.code, 429);
+  assert.equal(hashing.checks.length, 6);
+  hashing.checks.forEach(check => check.fail());
+  await Promise.all([...pending, otherPending]);
+  assert.equal(other.code, 401);
+});
+
+test("invalid password shapes consume admission budget without hashing", async () => {
+  let hashes = 0;
+  const auth = createMechanicAuth(password, { hashPassword: async () => { hashes++; throw new Error("must not hash"); } });
+  for (const candidate of [undefined, null, 42, {}, "x".repeat(257)]) {
+    const invalid = response();
+    await auth.login(request({ password: candidate }), invalid);
+    assert.equal(invalid.code, 401);
+  }
+  const limited = response();
+  await auth.login(request({ password }), limited);
+  assert.equal(limited.code, 429);
+  assert.equal(hashes, 0);
+});
+
+test("HTTP concurrent failed logins enforce the same five-attempt limit", async t => {
+  const { default: express } = await import("express");
+  const auth = createMechanicAuth(password);
+  const app = express();
+  app.use(express.json());
+  app.post("/login", auth.login);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const url = `http://127.0.0.1:${server.address().port}/login`;
+  const results = await Promise.all(Array.from({ length: 20 }, () => fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: "wrong" }),
+  })));
+  assert.equal(results.filter(res => res.status === 401).length, 5);
+  assert.equal(results.filter(res => res.status === 429).length, 15);
+  for (const res of results) assert.equal(res.headers.get("set-cookie"), null);
+  assert.equal((await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) })).status, 429);
 });
