@@ -28,7 +28,7 @@ for (const path of ["/", "/appointment", "/mechanic", "/api/services", "/api/mec
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.match(response.headers.get("x-robots-tag"), /noindex/);
 }
-const page = await fetch(`${origin}/appointment`, { headers: { authorization } });
+const page = await fetch(`${origin}/appointment`, { headers: { authorization, Accept: "text/html" } });
 assert.equal(page.status, 200);
 assert.equal(page.headers.get("cache-control"), "no-store");
 const html = await page.text();
