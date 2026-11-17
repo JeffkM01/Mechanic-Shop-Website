@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "node --test shared/*.test.js src/utils/*.test.js",
     "check:launch": "node scripts/check-launch.js",
+    "check:staging": "node scripts/check-staging.js",
     "test:browser": "playwright test"
   },
   "dependencies": {

@@ -63,6 +63,8 @@ CI also builds and starts the portable production image against its disposable d
 
 ## Production preparation
 
+For the proposed password-protected Render preview, start with [the staging runbook](docs/render-staging.md), [review template](deploy/render-staging.yaml), and [provider verification/cost worksheet](docs/render-provider-reference.md). Applying the template can create paid resources and start an initial deployment; it requires explicit approval. `npm run check:staging` validates inherited staging settings offline without loading private `.env` files, connecting to a database, or sending email. A passing check is not deployment approval.
+
 Follow [the production launch guide](docs/production-launch.md). The portable Docker image builds the frontend and runs the existing Node API as one non-root process, with optional same-origin serving of `dist`. Frontend-only hosting requires a separate running API and correct `/api` forwarding. Vite's development proxy is not production configuration.
 
 The current staff sessions and email dispatcher are process-local. Use one API process/replica; a restart safely requires staff to sign in again. MongoDB persists appointments, customer-management sessions, scheduling settings, reservations, and notification intent. Do not use the unchanged backend as an autoscaled/serverless function or start several dispatchers.

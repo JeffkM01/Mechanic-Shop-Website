@@ -12,6 +12,8 @@ import { createCustomerManagement } from "./customerManagement.js";
 import { readRuntimeConfig } from "./runtimeConfig.js";
 import { createServerRuntime, listen } from "./serverRuntime.js";
 import { createOperationTracker } from "./operationTracker.js";
+import { notificationEnvironmentForStage, readStagingSafety } from "./stagingSafety.js";
+import { createBookingRateLimiter, readBookingAbuseConfig } from "./bookingAbuseProtection.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -21,20 +23,26 @@ let notifications;
 let server;
 try {
   const config = readRuntimeConfig();
+  const staging = readStagingSafety();
+  const bookingRateLimiter = createBookingRateLimiter(readBookingAbuseConfig());
   const uri = process.env.MONGODB_URI;
   const auth = createMechanicAuth(process.env.MECHANIC_ADMIN_PASSWORD, { secureCookies: config.production });
   if (typeof uri !== "string" || !/^mongodb(?:\+srv)?:\/\//.test(uri) || uri.includes("DB_USER") || uri.includes("CLUSTER.mongodb.net")) {
     throw new Error("MONGODB_URI must be configured.");
   }
-  await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000, ...(staging.enabled ? { dbName: staging.databaseName } : {}) });
   await Promise.all([Appointment.init(), SchedulingState.init()]);
-  const management = createCustomerManagement({ Appointment });
+  const notificationEnv = notificationEnvironmentForStage(staging);
+  const management = createCustomerManagement({ Appointment, env: notificationEnv });
   const scheduling = createSchedulingService({ Appointment, SchedulingState, management });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
-  notifications = await createEmailNotifications({ Appointment, management });
+  // Staging never constructs an SMTP transport, even if real SMTP values were
+  // accidentally copied into its host environment. Queue state is retained.
+  notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv });
   const operationTracker = createOperationTracker();
   const app = createApp({ Appointment, scheduling, auth, notifications, management,
     operationTracker,
+    requestGate: staging.requestGate, bookingRateLimiter,
     trustProxy: config.trustProxy,
     frontendDirectory: config.serveFrontend ? fileURLToPath(new URL("../dist/", import.meta.url)) : null,
   });

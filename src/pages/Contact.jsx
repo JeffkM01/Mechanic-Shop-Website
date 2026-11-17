@@ -27,7 +27,7 @@ export default function Contact() {
       <section className="site-container section-pad contact-details" aria-labelledby="contact-details-heading">
         <div className="contact-intro">
           <div><p className="eyebrow">GET IN TOUCH</p><h2 id="contact-details-heading">A conversation away.</h2></div>
-          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>Contact details are being confirmed.</strong> The shop's public phone, email, and address have not yet been approved. Do not rely on example contact details. You can review available appointment-request times online.</span></p>}
+          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>Contact details are being confirmed.</strong> Public phone, email, service area, and appointment location are awaiting approval. You can review appointment-request times online; travel arrangements still need confirmation.</span></p>}
         </div>
         <div className="contact-cards">
           <article className="contact-card">
@@ -43,10 +43,10 @@ export default function Contact() {
             <p>{contact.confirmed ? "Use this address for appointment questions and shop inquiries." : "An approved public inbox will appear here when it is ready."}</p>
           </article>
           <article className="contact-card">
-            <div className="contact-card-top"><Icon name="pin" /><span className="contact-placeholder-tag">{contact.confirmed ? "Shop location" : "To be confirmed"}</span></div>
-            <h3>Visit the shop</h3>
-            <p className="contact-detail-value">{contact.confirmed ? contact.addressLines.map((line, index) => <span className="contact-address-line" key={index}>{line}</span>) : "Shop address to be confirmed"}</p>
-            <p>{contact.confirmed ? "Check your saved appointment status and the shop's operating hours before visiting." : "Please verify the shop location before visiting."}</p>
+            <div className="contact-card-top"><Icon name="pin" /><span className="contact-placeholder-tag">{contact.confirmed ? "Approved location" : "To be confirmed"}</span></div>
+            <h3>Service area &amp; location</h3>
+            <p className="contact-detail-value">{contact.confirmed ? contact.addressLines.map((line, index) => <span className="contact-address-line" key={index}>{line}</span>) : "Appointment location to be confirmed"}</p>
+            <p>{contact.confirmed ? "Check your confirmed appointment's location and saved service time before travelling." : "Service area and work-location details will appear after Edward confirms the arrangements."}</p>
           </article>
         </div>
       </section>
@@ -63,7 +63,7 @@ export default function Contact() {
               <li><Icon name="check" />Check whether your saved appointment is confirmed or awaiting review.</li>
             </ul>
             <Link className="button button-primary" to="/appointment">Request an appointment <Icon name="arrow" /></Link>
-            <p className="contact-booking-note">Visit only after your appointment has a confirmed status.</p>
+            <p className="contact-booking-note">Confirm your appointment status and service location before travelling.</p>
           </div>
           <aside className="contact-hours" aria-labelledby="contact-hours-heading">
             <div className="contact-hours-heading"><Icon name="clock" /><span className="contact-placeholder-tag">{verified ? "Confirmed hours" : "Hours awaiting confirmation"}</span></div>
