@@ -2,7 +2,7 @@ import express from "express";
 import { statSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
 
-export function serveBuiltFrontend(app, directory) {
+export function serveBuiltFrontend(app, directory, { privateResponses = false } = {}) {
   const root = resolve(directory);
   const index = join(root, "index.html");
   try { if (!statSync(index).isFile()) throw new Error(); }
@@ -12,7 +12,7 @@ export function serveBuiltFrontend(app, directory) {
     index: false, dotfiles: "deny", maxAge: 0,
     setHeaders(res, file) {
       const asset = relative(root, file).split(sep)[0] === "assets";
-      res.setHeader("Cache-Control", asset ? "public, max-age=31536000, immutable" : "no-store");
+      res.setHeader("Cache-Control", asset && !privateResponses ? "public, max-age=31536000, immutable" : "no-store");
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader("X-Content-Type-Options", "nosniff");
     },

@@ -69,6 +69,8 @@ Do not put deployment tokens, MongoDB credentials, SMTP credentials, or the mana
 
 Supply server-only secrets through the host's private environment/secret store.
 
+The optional protected preview is documented in [Render staging](render-staging.md). `DEPLOYMENT_STAGE=staging` adds a site-wide gateway, requires an explicit isolated staging database, and forcibly disables outgoing email and management-link issuance. It never approves public launch. Do not remove its safeguards to test email; that requires a separately reviewed controlled-mail setup. Normal deployments keep their existing behavior when this opt-in stage is unset.
+
 | Setting | Production requirement |
 | --- | --- |
 | `NODE_ENV` | `production`; enables secure production cookie behavior. |
@@ -87,7 +89,7 @@ Configure proxy trust only for the actual trusted proxy networks supported by th
 
 Staff login limits each client IP to five failed or in-flight password checks in a fixed 15-minute window. A slot is reserved before hashing, so concurrent attempts share that budget. A success clears completed failures while preserving other in-flight checks; failures that finish later still count. HTTP 429 means the budget is exhausted, even for a subsequently correct password, and rejected requests do not extend the window. This application limiter is process-local and does not replace trusted ingress controls.
 
-Configure and test abuse controls at the selected public ingress, including rate limiting for `POST /api/appointments`. Staff login has application throttling; the public booking route does not currently impose a booking-spam quota. Choose limits for the actual shop traffic and trusted client-IP topology, and verify that legitimate submissions receive clear retry behavior. Do not assume the host enables these controls automatically.
+Configure and test abuse controls at the selected public ingress, including rate limiting for `POST /api/appointments`. Staff login has application throttling. Public booking has an opt-in process-local quota via `BOOKING_RATE_LIMIT_ENABLED=true`, enabled in the staging template: five submitted attempts per observed IP in a fixed 15-minute window by default, before JSON parsing. Invalid submissions count; HTTP 429 includes `Retry-After`. `BOOKING_RATE_LIMIT_MAX` and `BOOKING_RATE_LIMIT_WINDOW_MINUTES` allow explicit tuning. The bounded counters reset on restart and require verified proxy/client-IP handling; this is not a distributed or edge abuse system. Choose limits for actual shop traffic and verify that legitimate submissions receive clear retry behavior. Do not assume the host enables ingress controls automatically.
 
 Missing or invalid management-link/SMTP settings must retain honest fallback behavior, never fabricate a working link or claim email was delivered. Production launch checks can remain blocked while local development and synthetic tests work normally.
 

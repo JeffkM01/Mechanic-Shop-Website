@@ -7,12 +7,13 @@ import { createOperationTracker } from "./operationTracker.js";
 
 export function createApp({ Appointment, scheduling, auth, notifications, management = null, databaseReady = () => Appointment.db.readyState === 1,
   runtimeReady = () => true, frontendDirectory = null, trustProxy = false, logger = console,
-  operationTracker = createOperationTracker() }) {
+  operationTracker = createOperationTracker(), requestGate = null, bookingRateLimiter = null }) {
   const app = express();
   const track = operationTracker.wrap;
   const ready = () => runtimeReady() && operationTracker.isAccepting();
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxy);
+  if (requestGate) app.use(requestGate);
   app.use("/api", (_req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
     next();
@@ -23,6 +24,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
     next();
   });
+  if (bookingRateLimiter) app.post("/api/appointments", bookingRateLimiter);
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/api/health", (_req, res) => {
@@ -157,7 +159,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
 
   // Never let an unknown API path fall through to the frontend HTML fallback.
   app.use("/api", (_req, res) => res.status(404).json({ error: "API route not found.", code: "API_NOT_FOUND" }));
-  if (frontendDirectory) serveBuiltFrontend(app, frontendDirectory);
+  if (frontendDirectory) serveBuiltFrontend(app, frontendDirectory, { privateResponses: Boolean(requestGate) });
 
   app.use((error, _req, res, _next) => {
     if (error instanceof SchedulingError) return res.status(error.status).json({ error: error.message, code: error.code, ...(error.fields ? { fields: error.fields } : {}) });

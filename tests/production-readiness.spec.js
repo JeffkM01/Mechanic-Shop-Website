@@ -14,7 +14,9 @@ const DRAFT = "Draft — awaiting Edward’s approval";
 
 async function assertContactDetails(page, profile) {
   if (!profile.contact.confirmed) {
-    for (const value of ["Phone number to be confirmed", "Public email to be confirmed", "Shop address to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
+    for (const value of ["Phone number to be confirmed", "Public email to be confirmed", "Appointment location to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Service area & location" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Visit the shop" })).toHaveCount(0);
     await expect(page.locator("main a[href^='tel:'], main a[href^='mailto:']")).toHaveCount(0);
   } else {
     await expect(page.getByRole("link", { name: profile.contact.phone, exact: true })).toHaveAttribute("href", /^tel:\+/);

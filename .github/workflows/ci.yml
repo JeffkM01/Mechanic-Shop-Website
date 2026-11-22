@@ -65,6 +65,8 @@ jobs:
         run: npm test --prefix server
       - name: Build portable production image without publishing
         run: docker build -t eds-auto-shop:ci .
+      - name: Check safe startup diagnostics without database or network access
+        run: node scripts/smoke-startup-failures.js eds-auto-shop:ci
       - name: Check packaged server against isolated MongoDB
         env:
           MONGO_SERVICE_CONTAINER: ${{ job.services.mongodb.id }}
@@ -94,6 +96,26 @@ jobs:
             const asset = await fetch(origin + "/assets/missing.js", { headers: { Accept: "text/html" } });
             assert.equal(asset.status, 404);
           '
+          docker stop --time 35 "$container_id" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" = 0
+      - name: Check protected staging image without sending email
+        env:
+          MONGO_SERVICE_CONTAINER: ${{ job.services.mongodb.id }}
+        run: |
+          container_id="$(docker run -d --network "container:$MONGO_SERVICE_CONTAINER" \
+            -e DEPLOYMENT_STAGE=staging \
+            -e MONGODB_DATABASE=eds_staging_image_test_ci \
+            -e MONGODB_URI=mongodb://127.0.0.1:27017/eds_staging_image_test_ci \
+            -e STAGING_ACCESS_PASSWORD=Synthetic-staging-gateway-password-2026 \
+            -e MECHANIC_ADMIN_PASSWORD=Synthetic-image-CI-password-2026 \
+            -e BOOKING_RATE_LIMIT_ENABLED=true \
+            -e SMTP_HOST=smtp.example.invalid -e SMTP_PORT=587 \
+            -e SMTP_USER=synthetic -e SMTP_PASS=synthetic \
+            -e MAIL_FROM=synthetic@example.invalid \
+            -e MECHANIC_NOTIFICATION_EMAIL=synthetic-staff@example.invalid \
+            eds-auto-shop:ci)"
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          docker exec -i "$container_id" node --input-type=module < scripts/smoke-staging.js
           docker stop --time 35 "$container_id" >/dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" = 0
       - name: Install Chromium and browser dependencies

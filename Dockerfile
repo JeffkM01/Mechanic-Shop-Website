@@ -35,7 +35,7 @@ COPY --chown=node:node shared ./shared
 # Existing server email templates also use this browser-independent formatter.
 COPY --chown=node:node src/utils/bookingDates.js ./src/utils/bookingDates.js
 COPY --chown=node:node package.json ./package.json
-COPY --chown=node:node scripts/check-launch.js ./scripts/check-launch.js
+COPY --chown=node:node scripts/check-launch.js scripts/check-staging.js ./scripts/
 COPY --from=frontend-build --chown=node:node /app/dist ./dist
 USER node
 EXPOSE 3001

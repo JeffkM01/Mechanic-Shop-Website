@@ -60,6 +60,15 @@ test("production preflight enforces runtime formats without trusting arbitrary p
   assert.equal(codePasses(checked({ TRUST_PROXY: "127.0.0.1/32,::1/128" }), "SERVER_RUNTIME"), true);
 });
 
+test("protected staging cannot be mistaken for public-launch configuration", () => {
+  for (const stage of ["staging", "development", "invalid", ""]) {
+    const report = checked({ DEPLOYMENT_STAGE: stage });
+    assert.equal(report.configurationReady, false);
+    assert.equal(codePasses(report, "DEPLOYMENT_STAGE"), false);
+  }
+  assert.equal(checked({ DEPLOYMENT_STAGE: "production" }).configurationReady, true);
+});
+
 test("public origin rejects insecure, reserved, private, mapped and malformed addresses", () => {
   for (const origin of [undefined, "", "http://shop.synthetic-shop.org", "https://localhost", "https://localhost.", "https://shop.example.com.", "https://example.invalid", "https://127.0.0.1", "https://10.0.0.1", "https://172.16.0.1", "https://192.168.1.1", "https://[::1]", "https://[fd00::1]", "https://[::ffff:127.0.0.1]", "https://[::ffff:192.168.1.1]", "https://user:password@shop.synthetic-shop.org", "https://shop.synthetic-shop.org/path", "https://shop.synthetic-shop.org?tracking=x", "https://shop.synthetic-shop.org#token", "https://shop.synthetic-shop.org\n"]) {
     assert.equal(codePasses(checked({ PUBLIC_WEBSITE_ORIGIN: origin }), "PUBLIC_WEBSITE_ORIGIN"), false, String(origin));
