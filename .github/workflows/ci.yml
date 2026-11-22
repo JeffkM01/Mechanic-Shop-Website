@@ -65,6 +65,8 @@ jobs:
         run: npm test --prefix server
       - name: Build portable production image without publishing
         run: docker build -t eds-auto-shop:ci .
+      - name: Check safe startup diagnostics without database or network access
+        run: node scripts/smoke-startup-failures.js eds-auto-shop:ci
       - name: Check packaged server against isolated MongoDB
         env:
           MONGO_SERVICE_CONTAINER: ${{ job.services.mongodb.id }}

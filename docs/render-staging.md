@@ -95,6 +95,37 @@ Configure and test `/api/health` monitoring and owner alerts. Add a separate pro
 
 Retain the reviewed app commit/image and configuration record for rollback. Stop the current process before starting the compatible earlier image; do not run both dispatchers. Confirm the old code understands the stored service catalog, scheduling schema, retry metadata, and `failed` notification state. A code rollback does not roll back MongoDB, recall mail, or revive revoked links. Restored databases require reconciliation and management-key rotation before exposure, as described in the recovery runbook.
 
+## When the image builds but the application exits
+
+A successful Vite/Docker build does not verify runtime credentials or Atlas
+network access. The application connects to MongoDB and initializes indexes and
+scheduling state before opening its HTTP listener. A failed startup still exits
+with status 1, but now logs one fixed diagnostic category instead of exposing a
+driver error or printing environment values.
+
+| Log category | Operator check |
+| --- | --- |
+| `STAGING_ACCESS_PASSWORD` | Set a separate random 32–256-character preview password. Enter only the generated value in the Value field, without whitespace or placeholder text. |
+| `STAGING_DATABASE_NAME` | `MONGODB_DATABASE` must name the intended isolated `eds_staging_*` database. |
+| `STAGING_DATABASE_URI` | Use the exact key `MONGODB_URI`, not `MONGODB_URL`. Its database path must match `MONGODB_DATABASE`; encode password characters and keep verified TLS enabled. |
+| `MECHANIC_ADMIN_PASSWORD` | Set the separate generated staff password. It is not the Atlas user's password. |
+| `DATABASE_AUTHENTICATION` | Review the intended database user, password and URI encoding privately. |
+| `DATABASE_PERMISSION` | Verify `readWrite` on only the intended staging database; do not resolve this by granting administrator access. |
+| `DATABASE_DNS` / `DATABASE_TLS` | Check the real cluster hostname, cluster status, DNS, certificate trust and clock. Keep certificate/hostname verification enabled. |
+| `DATABASE_UNREACHABLE` | Check cluster availability, DNS/TLS and Atlas Network Access against the service's actual Render outbound addresses. This category does not prove which network rule failed; do not add `0.0.0.0/0` as a shortcut. |
+| Other configuration, index, settings or HTTP phases | Follow the named phase's fixed advice. Preserve existing records/indexes/settings; investigate compatibility before changing data. |
+
+Copy only the fixed category/advice when requesting help. Never publish raw
+connection strings, passwords, SMTP keys, management secrets, request bodies or
+arbitrary driver errors. An unknown error retains a generic phase diagnostic.
+The reporting change does not relax validation, enable email, change saved
+booking rules or automatically retry a deployment. Keep Auto-Deploy off and
+manually select the reviewed revision when a staging retry is authorized.
+
+CI also runs the packaged application with deliberately invalid synthetic
+configuration and with networking disabled, verifying nonzero exits and redacted
+diagnostics. These checks do not contact Atlas or send email.
+
 ## Approval and hosted verification
 
 Repository checks validate synthetic code paths. They do not create accounts, configure provider ACLs, prove HTTPS forwarding, verify the actual schedule, purchase a plan, or perform a remote restore.

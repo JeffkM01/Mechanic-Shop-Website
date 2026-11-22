@@ -14,6 +14,7 @@ import { createServerRuntime, listen } from "./serverRuntime.js";
 import { createOperationTracker } from "./operationTracker.js";
 import { notificationEnvironmentForStage, readStagingSafety } from "./stagingSafety.js";
 import { createBookingRateLimiter, readBookingAbuseConfig } from "./bookingAbuseProtection.js";
+import { startupFailureMessage } from "./startupDiagnostics.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -21,24 +22,35 @@ dotenv.config({ path: fileURLToPath(new URL(".env", import.meta.url)), quiet: tr
 process.env.TZ = "America/Chicago";
 let notifications;
 let server;
+let startupPhase = "RUNTIME_CONFIGURATION";
 try {
   const config = readRuntimeConfig();
+  startupPhase = "STAGING_CONFIGURATION";
   const staging = readStagingSafety();
+  startupPhase = "BOOKING_RATE_LIMIT_CONFIGURATION";
   const bookingRateLimiter = createBookingRateLimiter(readBookingAbuseConfig());
   const uri = process.env.MONGODB_URI;
+  startupPhase = "MECHANIC_AUTH_CONFIGURATION";
   const auth = createMechanicAuth(process.env.MECHANIC_ADMIN_PASSWORD, { secureCookies: config.production });
+  startupPhase = "DATABASE_URI_CONFIGURATION";
   if (typeof uri !== "string" || !/^mongodb(?:\+srv)?:\/\//.test(uri) || uri.includes("DB_USER") || uri.includes("CLUSTER.mongodb.net")) {
     throw new Error("MONGODB_URI must be configured.");
   }
+  startupPhase = "DATABASE_CONNECTION";
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000, ...(staging.enabled ? { dbName: staging.databaseName } : {}) });
+  startupPhase = "DATABASE_INDEXES";
   await Promise.all([Appointment.init(), SchedulingState.init()]);
   const notificationEnv = notificationEnvironmentForStage(staging);
+  startupPhase = "CUSTOMER_MANAGEMENT";
   const management = createCustomerManagement({ Appointment, env: notificationEnv });
+  startupPhase = "SCHEDULING_SETTINGS";
   const scheduling = createSchedulingService({ Appointment, SchedulingState, management });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
   // Staging never constructs an SMTP transport, even if real SMTP values were
   // accidentally copied into its host environment. Queue state is retained.
+  startupPhase = "NOTIFICATIONS";
   notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv });
+  startupPhase = "HTTP_APPLICATION";
   const operationTracker = createOperationTracker();
   const app = createApp({ Appointment, scheduling, auth, notifications, management,
     operationTracker,
@@ -46,6 +58,7 @@ try {
     trustProxy: config.trustProxy,
     frontendDirectory: config.serveFrontend ? fileURLToPath(new URL("../dist/", import.meta.url)) : null,
   });
+  startupPhase = "HTTP_LISTENER";
   server = createServer(app);
   const runtime = createServerRuntime({ server,
     disconnectDatabase: () => mongoose.disconnect(), stopNotifications: () => notifications.stop(),
@@ -54,12 +67,13 @@ try {
   await listen(server, config);
   runtime.installSignalHandlers();
   // Begin queue delivery only after the HTTP listener has started successfully.
+  startupPhase = "NOTIFICATIONS";
   notifications.start();
   console.log(`Appointment service listening on ${config.host}:${config.port}.`);
   console.log(`Frontend serving ${config.serveFrontend ? "enabled" : "disabled"}. Email notifications ${notifications.enabled ? "enabled" : "disabled (SMTP not configured)"}.`);
-} catch {
+} catch (error) {
   // Never echo arbitrary MongoDB, SMTP, request or environment values.
-  console.error("Could not start the appointment service. Check the private runtime configuration and database connectivity.");
+  console.error(startupFailureMessage(startupPhase, error));
   await Promise.allSettled([
     Promise.resolve().then(() => notifications?.stop()),
     Promise.resolve().then(() => { server?.close(); server?.closeAllConnections?.(); }),
