@@ -36,14 +36,14 @@ export function customerAppointmentPayload(context, scheduling, notifications) {
   };
 }
 
-export function createCustomerRoutes({ management, scheduling, notifications }) {
+export function createCustomerRoutes({ management, scheduling, notifications, track = handler => handler }) {
   const router = Router();
   router.use((_req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
     next();
   });
 
-  router.post("/:id/exchange", async (req, res, next) => {
+  router.post("/:id/exchange", track(async (req, res, next) => {
     try {
       management.requireOrigin(req);
       management.limitExchange(req);
@@ -54,16 +54,16 @@ export function createCustomerRoutes({ management, scheduling, notifications }) 
       management.setCookie(res, context);
       res.json(customerAppointmentPayload(context, scheduling, notifications));
     } catch (error) { next(error); }
-  });
+  }));
 
-  router.get("/:id", async (req, res, next) => {
+  router.get("/:id", track(async (req, res, next) => {
     try {
       const context = await management.authorize(req, req.params.id);
       res.json(customerAppointmentPayload(context, scheduling, notifications));
     } catch (error) { next(error); }
-  });
+  }));
 
-  router.post("/:id/cancel", async (req, res, next) => {
+  router.post("/:id/cancel", track(async (req, res, next) => {
     try {
       management.requireOrigin(req);
       const context = await management.authorize(req, req.params.id);
@@ -74,9 +74,9 @@ export function createCustomerRoutes({ management, scheduling, notifications }) 
       res.json(customerAppointmentPayload(context, scheduling, notifications));
       notifications.kick();
     } catch (error) { next(error); }
-  });
+  }));
 
-  router.post("/:id/logout", async (req, res, next) => {
+  router.post("/:id/logout", track(async (req, res, next) => {
     try {
       management.requireOrigin(req);
       const context = await management.authorize(req, req.params.id);
@@ -88,7 +88,7 @@ export function createCustomerRoutes({ management, scheduling, notifications }) 
       management.clearCookie(res, context.id);
       res.status(204).end();
     } catch (error) { next(error); }
-  });
+  }));
 
   router.use((_req, res) => res.status(404).json({ error: "Appointment management route unavailable.", code: "MANAGEMENT_UNAVAILABLE" }));
   router.use((error, _req, res, _next) => {

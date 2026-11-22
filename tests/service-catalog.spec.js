@@ -1,6 +1,4 @@
 import axe from "axe-core";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test, expect, CUSTOMER } from "./cancellation-fixture.js";
 import { requiresMechanicApproval } from "../shared/services.js";
 import { formatBookingDate } from "../src/utils/bookingDates.js";
@@ -91,11 +89,9 @@ async function audit(page) {
 }
 async function capture(page, testInfo, name, target = null) {
   const path = testInfo.outputPath(`${name}.png`);
-  const png = target ? await target.screenshot({ path }) : await page.screenshot({ path, fullPage: true });
+  if (target) await target.screenshot({ path });
+  else await page.screenshot({ path, fullPage: true });
   await testInfo.attach(name, { path, contentType: "image/png" });
-  const folder = "/workspace/artifacts/service-catalog";
-  await mkdir(folder, { recursive: true });
-  await writeFile(join(folder, `${testInfo.project.name}-${name}.png`), png);
 }
 
 test("keeps existing services and enforces the new Wiper-only automatic policy without enabling automation", async ({ page, shop }) => {

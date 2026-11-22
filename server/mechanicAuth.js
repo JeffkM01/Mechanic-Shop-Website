@@ -15,7 +15,7 @@ function getCookie(req, name) {
 }
 
 // Local-demo authentication. Sessions are in server memory, not browser storage.
-export function createMechanicAuth(password, { now = () => Date.now(), secureCookies = false } = {}) {
+export function createMechanicAuth(password, { now = () => Date.now(), secureCookies = false, hashPassword = scrypt } = {}) {
   if (typeof password !== "string" || password.length < 12 || password.includes("REPLACE_WITH")) {
     throw new Error("Set MECHANIC_ADMIN_PASSWORD (at least 12 characters) in server/.env.");
   }
@@ -34,7 +34,7 @@ export function createMechanicAuth(password, { now = () => Date.now(), secureCoo
 
   async function matchesPassword(candidate) {
     if (typeof candidate !== "string" || !candidate || candidate.length > 256) return false;
-    const candidateHash = await scrypt(candidate, salt, 64);
+    const candidateHash = await hashPassword(candidate, salt, 64);
     return timingSafeEqual(candidateHash, expectedHash);
   }
 
@@ -67,20 +67,41 @@ export function createMechanicAuth(password, { now = () => Date.now(), secureCoo
 
   async function login(req, res) {
     const ip = req.ip || "local";
-    const current = attempts.get(ip);
-    if (current && current.until > now() && current.count >= MAX_ATTEMPTS) {
+    const clock = now();
+    let current = attempts.get(ip);
+    if (!current) {
+      current = { failures: 0, pending: 0, until: clock + LIMIT_WINDOW_MS };
+      attempts.set(ip, current);
+    } else if (current.until <= clock) {
+      // A new fixed window clears settled failures, but an expensive check
+      // still in flight keeps its slot even across the window boundary.
+      current.failures = 0;
+      current.until = clock + LIMIT_WINDOW_MS;
+    }
+    if (current.failures + current.pending >= MAX_ATTEMPTS) {
       return res.status(429).json({ error: "Too many sign-in attempts. Try again later." });
     }
 
+    // Reserve before the first await: concurrent requests cannot all observe
+    // an empty budget and enqueue unbounded password hashes. The injectable
+    // hasher permits deterministic tests; production uses async scrypt.
+    current.pending++;
     const passwordInput = req.body?.password;
-    const valid = await matchesPassword(passwordInput);
+    let valid = false;
+    try {
+      valid = await matchesPassword(passwordInput);
+    } finally {
+      current.pending--;
+      // Success clears failures already completed, never pending reservations.
+      // A concurrent failure settling after success consumes the budget again.
+      if (valid) current.failures = 0;
+      else current.failures++;
+      if (!current.pending && (!current.failures || current.until <= now())) attempts.delete(ip);
+    }
     if (!valid) {
-      const count = current && current.until > now() ? current.count + 1 : 1;
-      attempts.set(ip, { count, until: now() + LIMIT_WINDOW_MS });
       return res.status(401).json({ error: "Incorrect password." });
     }
 
-    attempts.delete(ip);
     // Clean up expired sessions when a new session is established.
     for (const [token, session] of sessions) {
       if (session.expiresAt <= now()) sessions.delete(token);

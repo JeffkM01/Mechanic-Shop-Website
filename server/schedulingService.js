@@ -5,7 +5,7 @@ import { getServiceCatalog, validateServiceCatalog } from "../shared/serviceCata
 import { validateDeclineReason } from "../shared/declineReasons.js";
 import { validateCancellation } from "../shared/cancellations.js";
 import { shopTimezoneFormatter } from "../shared/shopTime.js";
-import { defaultSettings, mergeSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
+import { defaultSettings, mergeSettings, validateSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
 
 const idOf = (value) => String(value);
 const overlaps = (a, b) => +new Date(a.startAt) < +new Date(b.occupiedUntil ?? b.endAt) && +new Date(b.startAt) < +new Date(a.occupiedUntil ?? a.endAt);
@@ -163,6 +163,21 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         active: true, provisional: service.provisional, appointmentOnly: service.appointmentOnly,
         legacyNames: [...service.legacyNames],
       })),
+    };
+  }
+
+  async function getPublicShopHours() {
+    const state = await readState();
+    const settings = validateSettings(state.settings);
+    const verified = settings.businessHoursVerified === true;
+    // Customer contact pages use the saved, explicitly verified schedule.
+    // Never advertise placeholder hours or expose private blocked periods.
+    return {
+      verified,
+      timezone: settings.timezone,
+      weeklyHours: verified ? structuredClone(settings.weeklyHours) : null,
+      breaks: verified ? structuredClone(settings.breaks) : [],
+      closedDates: verified ? [...settings.closedDates] : [],
     };
   }
 
@@ -512,5 +527,5 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return { removed: true };
   }
 
-  return { getSettings, getPublicServices, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
+  return { getSettings, getPublicServices, getPublicShopHours, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
 }

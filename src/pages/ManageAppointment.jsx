@@ -79,6 +79,7 @@ function CancellationDialog({ appointment, busy, checking, locked, error, server
 
 function NotificationNotice({ notifications }) {
   const values = [notifications?.customer, notifications?.mechanic].map(value => typeof value === "object" ? value?.status : value);
+  if (values.includes("failed")) return <p className="manage-help">An email could not be delivered. Your cancellation is saved and visible to the shop. Please contact the shop if you need to confirm they received the update.</p>;
   if (values.some(value => ["queued", "pending", "sending", "retry"].includes(value))) return <p className="manage-help">Cancellation emails are queued for delivery. Delivery may take time; the saved cancellation is already in effect.</p>;
   if (values.some(value => ["failed", "disabled", "unavailable"].includes(value)) || !values.some(Boolean)) return <p className="manage-help">Email delivery is unavailable or could not be queued. Your cancellation is saved and visible to the shop.</p>;
   return <p className="manage-help">Your cancellation is saved and visible to the shop. Email delivery is handled separately.</p>;

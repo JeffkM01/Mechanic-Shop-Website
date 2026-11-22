@@ -3,6 +3,24 @@ import { DECLINE_REASONS, DECLINE_EXPLANATION_MIN, DECLINE_MESSAGE_MAX } from ".
 import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS, CANCELLATION_MESSAGE_MAX, CANCELLATION_EXPLANATION_MAX } from "../shared/cancellations.js";
 import { managementSchema } from "./customerManagementSchema.js";
 
+const notificationKinds = ["requestCustomer", "requestMechanic", "decisionCustomer", "cancellationCustomer", "cancellationMechanic"];
+const failureCodes = ["invalid-recipient", "recipient-rejected", "transport-error", "acknowledgement-error", "record-error"];
+const notificationRetrySchema = new mongoose.Schema({
+  failureCount: { type: Number, required: true, min: 1, max: 1_000_000, validate: Number.isInteger },
+  firstFailureAt: { type: Date, required: true },
+  lastFailureAt: { type: Date, required: true },
+  lastFailureCode: { type: String, enum: failureCodes, required: true },
+  nextAttemptAt: { type: Date, default: null },
+  history: {
+    type: [new mongoose.Schema({
+      at: { type: Date, required: true },
+      code: { type: String, enum: failureCodes, required: true },
+      permanent: { type: Boolean, required: true },
+    }, { _id: false })],
+    validate: value => value.length <= 5,
+  },
+}, { _id: false });
+
 export const appointmentSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
   email: { type: String, required: true, trim: true, lowercase: true, maxlength: 254 },
@@ -57,15 +75,25 @@ export const appointmentSchema = new mongoose.Schema({
   // Queue flags are stored with the appointment so email failures cannot undo the booking.
   // Old Phase 2/3 records have no flags and are not sent old "request received" emails.
   notificationState: {
-    requestCustomer: { type: String, enum: ["pending", "sent", "suppressed"], default: "pending" },
-    requestMechanic: { type: String, enum: ["pending", "sent"], default: "pending" },
-    decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent", "suppressed"], default: "not-applicable" },
-    cancellationCustomer: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
-    cancellationMechanic: { type: String, enum: ["not-applicable", "pending", "sent"], default: "not-applicable" },
+    requestCustomer: { type: String, enum: ["pending", "sent", "failed", "suppressed"], default: "pending" },
+    requestMechanic: { type: String, enum: ["pending", "sent", "failed"], default: "pending" },
+    decisionCustomer: { type: String, enum: ["not-applicable", "pending", "sent", "failed", "suppressed"], default: "not-applicable" },
+    cancellationCustomer: { type: String, enum: ["not-applicable", "pending", "sent", "failed"], default: "not-applicable" },
+    cancellationMechanic: { type: String, enum: ["not-applicable", "pending", "sent", "failed"], default: "not-applicable" },
+  },
+  // Operational retry history contains only fixed failure codes and timestamps.
+  // Keep it private by default; legacy records need no migration or new intent.
+  notificationRetry: {
+    type: new mongoose.Schema(Object.fromEntries(notificationKinds.map(kind => [kind, { type: notificationRetrySchema, default: undefined }])), { _id: false }),
+    default: undefined,
+    select: false,
   },
 }, { timestamps: true });
 
 appointmentSchema.index({ status: 1, date: 1 });
 appointmentSchema.index({ "scheduling.startAt": 1, status: 1 });
+for (const kind of notificationKinds) {
+  appointmentSchema.index({ [`notificationState.${kind}`]: 1, [`notificationRetry.${kind}.nextAttemptAt`]: 1, createdAt: 1 });
+}
 
 export default mongoose.model("Appointment", appointmentSchema);
