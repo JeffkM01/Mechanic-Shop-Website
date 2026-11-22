@@ -36,7 +36,7 @@ export const test = base.extend({
       const SchedulingState = connection.model("SchedulingState", schedulingStateSchema.clone());
       await Promise.all([Appointment.init(), SchedulingState.init()]);
       let clock = +new Date("2030-01-07T12:00:00.000Z");
-      let sessionClock = Date.now();
+      let sessionClock = clock;
       const management = createCustomerManagement({ Appointment, now: () => new Date(clock), env: {
         NODE_ENV: "test", PUBLIC_WEBSITE_ORIGIN: "http://127.0.0.1:5174",
         APPOINTMENT_MANAGEMENT_SECRET: Buffer.alloc(32, 94).toString("base64"),
@@ -53,7 +53,18 @@ export const test = base.extend({
       const origin = `http://127.0.0.1:${server.address().port}`;
       const calls = [];
       const faults = { loseCancellationResponse: false, mechanicCsrf: false };
+      const browserContexts = new Set();
+      async function syncBrowserClock() {
+        // Fix Date/Date.now to the synthetic server clock while ordinary
+        // timers continue running. The context clock also covers new tabs.
+        await Promise.all([...browserContexts].map(target => target.clock.setFixedTime(new Date(clock))));
+      }
       async function routeIsolated(target) {
+        if (!browserContexts.has(target)) {
+          browserContexts.add(target);
+          target.once("close", () => browserContexts.delete(target));
+        }
+        await target.clock.setFixedTime(new Date(clock));
         await target.route("**/api/**", async route => {
           const operation = (async () => {
             if (shuttingDown) return route.fulfill({ status: 503, json: { error: "Isolated test server is closing." } });
@@ -78,7 +89,7 @@ export const test = base.extend({
       await routeIsolated(context);
       await provide({
         Appointment, SchedulingState, scheduling, management, calls, faults, origin, routeIsolated,
-        advanceClock: milliseconds => { clock += milliseconds; },
+        advanceClock: async milliseconds => { clock += milliseconds; await syncBrowserClock(); },
         advanceSession: milliseconds => { sessionClock += milliseconds; },
         async createAppointment(overrides = {}) { return scheduling.createAppointment({ ...CUSTOMER, ...overrides }); },
         async linkFor(id) {

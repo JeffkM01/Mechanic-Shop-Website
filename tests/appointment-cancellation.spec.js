@@ -127,6 +127,44 @@ test("exchanges a fragment credential, scrubs the URL and exposes only authorize
   await expect(page.getByText(INVALID_LINK, { exact: true })).toBeVisible();
 });
 
+test("aligns distant browser wall clocks with the synthetic server and preserves the twenty-minute session limit", async ({ context, shop }) => {
+  const sessionLifetime = 20 * 60_000;
+  let expectedClock = +new Date("2030-01-07T12:00:00.000Z");
+  for (const [wallClock, time] of [["2026-11-17T17:40:00.000Z", "08:00"], ["2026-11-22T17:40:00.000Z", "10:00"]]) {
+    const isolated = await context.browser().newContext({ viewport: { width: 390, height: 844 }, locale: "en-GB", timezoneId: "Pacific/Kiritimati" });
+    try {
+      const testPage = await isolated.newPage();
+      await isolated.clock.setFixedTime(new Date(wallClock));
+      expect(await testPage.evaluate(() => Date.now())).toBe(+new Date(wallClock));
+      // The real fixture entrypoint must align current and future tabs, even
+      // when the browser initially differs from the server by several years.
+      await shop.routeIsolated(isolated);
+      expect(await testPage.evaluate(() => Date.now())).toBe(expectedClock);
+      const futureTab = await isolated.newPage();
+      expect(await futureTab.evaluate(() => Date.now())).toBe(expectedClock);
+      await futureTab.close(); await testPage.bringToFront();
+      const appointment = await shop.createAppointment({ time });
+      const exchanged = testPage.waitForResponse(response => new URL(response.url()).pathname === `/api/customer/appointments/${appointment.id}/exchange` && response.request().method() === "POST");
+      await openManagement(testPage, shop, appointment);
+      const response = await exchanged;
+      expect(response.status()).toBe(200);
+      const details = await response.json();
+      expect(+new Date(details.sessionExpiresAt) - await testPage.evaluate(() => Date.now())).toBe(sessionLifetime);
+      // Date is fixed, while ordinary browser timers still execute.
+      expect(await testPage.evaluate(() => new Promise(resolve => setTimeout(() => resolve(Date.now()), 10)))).toBe(expectedClock);
+      await expect(testPage.getByRole("button", { name: "Cancel Appointment", exact: true })).toBeVisible();
+      await shop.advanceClock(sessionLifetime + 1);
+      expectedClock += sessionLifetime + 1;
+      const denied = await testPage.evaluate(async id => (await fetch(`/api/customer/appointments/${id}`, { credentials: "same-origin" })).status, appointment.id);
+      expect(denied).toBe(401);
+      await testPage.reload();
+      await expect(testPage.getByText(INVALID_LINK, { exact: true })).toBeVisible();
+      await expect(testPage.locator("main")).not.toContainText(CUSTOMER.vehicle);
+      expect((await shop.Appointment.findById(appointment.id).lean()).status).toBe("pending");
+    } finally { await isolated.close(); }
+  }
+});
+
 test("rejects reference-only, invalid, expired, revoked and another appointment's credential without private data", async ({ page, context, shop }) => {
   const first = await shop.createAppointment();
   const second = await shop.createAppointment({ name: "Another Private Customer", time: "10:00" });
@@ -178,7 +216,7 @@ test("keeps two appointment tabs scoped when either is cancelled or its access i
     await page.getByRole("button", { name: "Close appointment access", exact: true }).click();
     await secondPage.bringToFront(); await secondPage.reload();
     await expect(secondPage.getByRole("button", { name: "Cancel Appointment", exact: true })).toBeVisible();
-    shop.advanceClock(20 * 60_000 + 1);
+    await shop.advanceClock(20 * 60_000 + 1);
     await secondPage.reload();
     await expect(secondPage.getByText(INVALID_LINK, { exact: true })).toBeVisible();
     await expect(secondPage.locator("main")).not.toContainText("2020 Toyota Corolla");
@@ -268,7 +306,7 @@ test("shows declined and already-started appointments without an online cancella
   await expect(page.locator("main")).toContainText(/declined/i);
   await expect(page.getByRole("button", { name: "Cancel Appointment", exact: true })).toHaveCount(0);
   const startedLink = await shop.linkFor(started.id);
-  shop.advanceClock(2 * 24 * 60 * 60_000 + 4 * 60 * 60_000);
+  await shop.advanceClock(2 * 24 * 60 * 60_000 + 4 * 60 * 60_000);
   await page.goto(startedLink);
   await expect(page.locator("main")).toContainText(/Online cancellation is no longer available/);
   await expect(page.getByRole("button", { name: "Cancel Appointment", exact: true })).toHaveCount(0);
