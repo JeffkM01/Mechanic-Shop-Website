@@ -55,6 +55,9 @@ const cases = [
   ["invalid runtime host", { HOST: "SYNTHETIC_INVALID_HOST" }, "HOST"],
   ["invalid runtime port", { PORT: "SYNTHETIC_INVALID_PORT" }, "PORT"],
   ["invalid booking quota flag", { BOOKING_RATE_LIMIT_ENABLED: "SYNTHETIC_INVALID_BOOLEAN" }, "BOOKING_RATE_LIMIT_ENABLED"],
+  ["invalid email test flag", { STAGING_EMAIL_TEST_ENABLED: "SYNTHETIC_INVALID_BOOLEAN" }, "EMAIL_TEST_CONFIGURATION"],
+  ["enabled email test without an API key", { STAGING_EMAIL_TEST_ENABLED: "true" }, "EMAIL_TEST_CONFIGURATION"],
+  ["email test outside protected staging", { DEPLOYMENT_STAGE: "production", STAGING_EMAIL_TEST_ENABLED: "true", BREVO_API_KEY: "SYNTHETIC_BREVO_PRIVATE_KEY_NOT_FOR_LOGS" }, "EMAIL_TEST_CONFIGURATION"],
 ];
 
 test("actual bootstrap identifies configuration failures before any database connection without exposing values", async t => {
@@ -76,7 +79,7 @@ test("actual bootstrap identifies configuration failures before any database con
       assert.equal(result.stderr.trim().split("\n").length, 1, "only the fixed diagnostic line is logged");
       for (const secret of [uri, "SYNTHETIC_DB_USER", "SYNTHETIC_DB_PASSWORD", baseline().STAGING_ACCESS_PASSWORD,
         baseline().MECHANIC_ADMIN_PASSWORD, baseline().APPOINTMENT_MANAGEMENT_SECRET, baseline().SMTP_PASS,
-        "SECRET_SHORT", "SYNTHETIC_INVALID_STAGE", "SYNTHETIC_INVALID_HOST", "SYNTHETIC_INVALID_PORT", "SYNTHETIC_INVALID_BOOLEAN"]) {
+        "SECRET_SHORT", "SYNTHETIC_INVALID_STAGE", "SYNTHETIC_INVALID_HOST", "SYNTHETIC_INVALID_PORT", "SYNTHETIC_INVALID_BOOLEAN", "SYNTHETIC_BREVO_PRIVATE_KEY_NOT_FOR_LOGS"]) {
         assert.equal(`${result.stdout}${result.stderr}`.includes(secret), false, "diagnostic must not echo configuration values");
       }
     });

@@ -1,5 +1,6 @@
 import { buildEmail, EMAIL_KINDS } from "./emailTemplates.js";
 import { fieldLimits, isValidEmailAddress } from "../shared/appointmentFields.js";
+import { createBrevoApiTransport, readEmailConfiguration } from "./emailTransport.js";
 
 const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 24 * 60 * 60 * 1000;
@@ -27,29 +28,25 @@ function retryDue(appointment, kind, clock) {
 // MongoDB stores the queued email flags in each Appointment document.
 // Only one local API process should run this dispatcher at a time.
 export async function createEmailNotifications({ Appointment, env = process.env, transport, logger = console, management = null, now = () => new Date() }) {
-  const keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM", "MECHANIC_NOTIFICATION_EMAIL"];
-  const enabled = keys.every((key) => typeof env[key] === "string" && env[key].trim().length > 0);
-  if (!enabled) {
+  const configuration = readEmailConfiguration(env);
+  if (!configuration) {
     const stop = async () => {};
     return { enabled: false, start: () => stop, stop, kick() {}, processPending: async () => {} };
   }
 
-  const port = Number(env.SMTP_PORT);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("SMTP_PORT must be a valid TCP port number.");
-  }
-
-  const mailer = transport ?? (await import("nodemailer")).default.createTransport({
-    host: env.SMTP_HOST,
-    port,
-    secure: port === 465,
-    requireTLS: port !== 465,
-    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+  const mailer = transport ?? (configuration.transport === "brevo_api"
+    ? createBrevoApiTransport({ apiKey: configuration.apiKey })
+    : (await import("nodemailer")).default.createTransport({
+    host: configuration.host,
+    port: configuration.port,
+    secure: configuration.port === 465,
+    requireTLS: configuration.port !== 465,
+    auth: { user: configuration.user, pass: configuration.pass },
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
-  });
-  const messageOptions = { from: env.MAIL_FROM, mechanicEmail: env.MECHANIC_NOTIFICATION_EMAIL };
+  }));
+  const messageOptions = { from: configuration.from, mechanicEmail: configuration.mechanicEmail };
   let processing = false;
   let stopped = false;
   let interval = null;

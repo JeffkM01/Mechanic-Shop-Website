@@ -19,6 +19,11 @@ const validEnv = () => ({
   SMTP_HOST: "smtp.synthetic-shop.org", SMTP_PORT: "587", SMTP_USER: "synthetic-smtp-user", SMTP_PASS: "synthetic-smtp-secret-not-live",
   MAIL_FROM: "Ed's Auto Shop <appointments@synthetic-shop.org>", MECHANIC_NOTIFICATION_EMAIL: "staff@synthetic-shop.org",
 });
+const validApiEnv = () => {
+  const env = { ...validEnv(), EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-brevo-api-key-not-live-852" };
+  for (const key of ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]) delete env[key];
+  return env;
+};
 const approvedProfile = () => ({
   schemaVersion: 1, name: "Synthetic Shop",
   contact: { confirmed: true, phone: "555-555-0123", email: "appointments@synthetic-shop.org", addressLines: ["100 Synthetic Test Road", "Synthetic City, ST 00000"] },
@@ -69,6 +74,15 @@ test("protected staging cannot be mistaken for public-launch configuration", () 
   assert.equal(checked({ DEPLOYMENT_STAGE: "production" }).configurationReady, true);
 });
 
+test("production preflight rejects an active or malformed staging-only email test flag", () => {
+  for (const flag of ["true", "yes", "", true, false, null]) {
+    const report = checked({ STAGING_EMAIL_TEST_ENABLED: flag });
+    assert.equal(report.configurationReady, false);
+    assert.equal(codePasses(report, "STAGING_EMAIL_TEST_ENABLED"), false);
+  }
+  assert.equal(checked({ STAGING_EMAIL_TEST_ENABLED: "false" }).configurationReady, true);
+});
+
 test("public origin rejects insecure, reserved, private, mapped and malformed addresses", () => {
   for (const origin of [undefined, "", "http://shop.synthetic-shop.org", "https://localhost", "https://localhost.", "https://shop.example.com.", "https://example.invalid", "https://127.0.0.1", "https://10.0.0.1", "https://172.16.0.1", "https://192.168.1.1", "https://[::1]", "https://[fd00::1]", "https://[::ffff:127.0.0.1]", "https://[::ffff:192.168.1.1]", "https://user:password@shop.synthetic-shop.org", "https://shop.synthetic-shop.org/path", "https://shop.synthetic-shop.org?tracking=x", "https://shop.synthetic-shop.org#token", "https://shop.synthetic-shop.org\n"]) {
     assert.equal(codePasses(checked({ PUBLIC_WEBSITE_ORIGIN: origin }), "PUBLIC_WEBSITE_ORIGIN"), false, String(origin));
@@ -98,6 +112,47 @@ test("SMTP values reject placeholders, control injection and multi-recipient hea
   }
 });
 
+test("API-only production configuration passes offline transport checks without SMTP requirements", t => {
+  t.mock.method(globalThis, "fetch", () => { assert.fail("Offline preflight cannot call the provider"); });
+  const env = validApiEnv();
+  const original = structuredClone(env);
+  const report = checkLaunchConfiguration({ env, profile: approvedProfile() });
+  assert.equal(report.configurationReady, true);
+  assert.equal(report.readyForPublicLaunch, false);
+  assert.equal(report.networkAccessed, false);
+  assert.equal(codePasses(report, "EMAIL_TRANSPORT"), true);
+  assert.equal(codePasses(report, "BREVO_API_KEY"), true);
+  assert.equal(codePasses(report, "EMAIL_CONFIGURATION"), true);
+  assert.equal(report.checks.some(check => check.code.startsWith("SMTP_")), false);
+  assert.ok(report.unverified.some(check => check.code === "EMAIL_DELIVERY_UNVERIFIED"));
+  assert.deepEqual(env, original);
+});
+
+test("unknown transport and malformed API-only configuration remain blocked without echoing secrets", () => {
+  const secret = "PRIVATE_SYNTHETIC_API_KEY_672";
+  for (const EMAIL_TRANSPORT of ["", null, true, "https", secret]) {
+    const report = checked({ EMAIL_TRANSPORT });
+    assert.equal(codePasses(report, "EMAIL_TRANSPORT"), false);
+    assert.equal(report.configurationReady, false);
+    assert.equal(JSON.stringify(report).includes(secret), false);
+  }
+  for (const BREVO_API_KEY of [undefined, "", "CHANGE_ME", `${secret}\n`, ` ${secret}`, "x".repeat(2049)]) {
+    const report = checkLaunchConfiguration({ env: { ...validApiEnv(), BREVO_API_KEY }, profile: approvedProfile() });
+    assert.equal(codePasses(report, "BREVO_API_KEY"), false);
+    assert.equal(report.configurationReady, false);
+    assert.equal(JSON.stringify(report).includes(secret), false);
+  }
+  for (const patch of [{ MAIL_FROM: "one@synthetic-shop.org,two@synthetic-shop.org" },
+    { MAIL_FROM: " appointments@synthetic-shop.org " }, { MAIL_FROM: "Shop < appointments@synthetic-shop.org>" },
+    { MECHANIC_NOTIFICATION_EMAIL: "Staff <staff@synthetic-shop.org>" }, { MECHANIC_NOTIFICATION_EMAIL: " staff@synthetic-shop.org " }]) {
+    const report = checkLaunchConfiguration({ env: { ...validApiEnv(), ...patch }, profile: approvedProfile() });
+    assert.equal(report.configurationReady, false, Object.keys(patch)[0]);
+    assert.equal(codePasses(report, "EMAIL_CONFIGURATION"), false);
+  }
+  const explicitSmtp = checkLaunchConfiguration({ env: { ...validApiEnv(), EMAIL_TRANSPORT: "smtp" }, profile: approvedProfile() });
+  assert.equal(explicitSmtp.configurationReady, false, "an unused API key cannot satisfy SMTP configuration");
+});
+
 test("reports contain key names and fixed advice, never supplied secret or malformed profile values", () => {
   const secret = "DO_NOT_ECHO_SYNTHETIC_SECRET_29";
   const profile = approvedProfile(); profile.contact.email = `${secret}\r\n@example.invalid`;
@@ -122,7 +177,7 @@ async function cliFixture(t, profile = approvedProfile()) {
   t.after(() => rm(root, { recursive: true, force: true }));
   await Promise.all(["server", "shared", "scripts"].map(directory => mkdir(join(root, directory))));
   await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
-  for (const file of ["scripts/check-launch.js", "server/launchChecks.js", "server/runtimeConfig.js", "shared/businessProfile.js", "shared/appointmentFields.js", "shared/services.js"]) await copyFile(join(project, file), join(root, file));
+  for (const file of ["scripts/check-launch.js", "server/launchChecks.js", "server/runtimeConfig.js", "server/emailTransport.js", "shared/businessProfile.js", "shared/appointmentFields.js", "shared/services.js"]) await copyFile(join(project, file), join(root, file));
   await writeFile(join(root, "shared/businessProfile.json"), JSON.stringify(profile));
   return root;
 }
@@ -136,6 +191,19 @@ test("CLI JSON success means configuration only, never approval or deployment", 
   assert.equal(report.readyForPublicLaunch, false);
   assert.equal(report.unverified.length, LIVE_LAUNCH_CHECKS.length);
   for (const value of [validEnv().SMTP_PASS, validEnv().MONGODB_URI, validEnv().APPOINTMENT_MANAGEMENT_SECRET]) assert.equal(result.stdout.includes(value), false);
+});
+
+test("CLI supports API-only transport in its isolated runtime without loading credentials or contacting Brevo", async t => {
+  const root = await cliFixture(t);
+  const env = validApiEnv();
+  const result = spawnSync(process.execPath, [join(root, "scripts/check-launch.js"), "--json"], { cwd: root, env, encoding: "utf8", timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.configurationReady, true);
+  assert.equal(report.readyForPublicLaunch, false);
+  assert.equal(report.networkAccessed, false);
+  assert.equal(result.stdout.includes(env.BREVO_API_KEY), false);
+  assert.equal(result.stdout.includes(env.MONGODB_URI), false);
 });
 
 test("CLI does not load private env files and exits blocked with readable fixed messages", async t => {

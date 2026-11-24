@@ -2,17 +2,28 @@ import { readRuntimeConfig } from "./runtimeConfig.js";
 import { readStagingSafety } from "./stagingSafety.js";
 import { readBookingAbuseConfig } from "./bookingAbuseProtection.js";
 import { checkLaunchConfiguration } from "./launchChecks.js";
+import { readEmailConnectionTestConfiguration } from "./emailConnectionTest.js";
 
 // Offline syntax checks only. Do not import index.js, load dotenv, construct a
 // mail transport, resolve a database host, or return environment values.
 export function checkStagingConfiguration({ env = process.env } = {}) {
   const checks = [];
   const add = (code, ok, message) => checks.push({ code, ok: Boolean(ok), message });
+  let staging;
+  let emailTestEnabled = false;
   try {
-    const config = readStagingSafety(env);
-    add("STAGING_ISOLATION", config.enabled, "Use DEPLOYMENT_STAGE=staging, a separate strong gateway password, and a matching explicit eds_staging_* database with verified transport settings.");
+    staging = readStagingSafety(env);
+    add("STAGING_ISOLATION", staging.enabled, "Use DEPLOYMENT_STAGE=staging, a separate strong gateway password, and a matching explicit eds_staging_* database with verified transport settings.");
   } catch {
     add("STAGING_ISOLATION", false, "Review DEPLOYMENT_STAGE, STAGING_ACCESS_PASSWORD, MONGODB_DATABASE and MONGODB_URI. Staging requires an explicit matching eds_staging_* database and protected remote transport.");
+  }
+  try {
+    emailTestEnabled = readEmailConnectionTestConfiguration({ staging, env }).enabled;
+    add("STAGING_EMAIL_TEST", true, emailTestEnabled
+      ? "The optional fixed-inbox manual connection test is configured; real acceptance and inbox delivery remain unverified. Ordinary appointment email stays disabled."
+      : "The optional manual email connection test is disabled.");
+  } catch {
+    add("STAGING_EMAIL_TEST", false, "Use STAGING_EMAIL_TEST_ENABLED=true only in protected staging with a private valid BREVO_API_KEY, or leave the optional test disabled.");
   }
   try {
     const runtime = readRuntimeConfig(env);
@@ -31,13 +42,16 @@ export function checkStagingConfiguration({ env = process.env } = {}) {
   return {
     checkType: "offline-protected-staging-configuration", configurationReady: blockers.length === 0,
     deploymentApproved: false, readyForPublicLaunch: false, networkAccessed: false, databaseAccessed: false,
+    emailConnectionTestEnabled: emailTestEnabled,
     checks, blockers,
     unverified: [
       "Owner approval, current compute quote/terms, region and initial-deploy review.",
       "Separate clean database, least-privilege credentials, TLS and actual network rules.",
       "Hosted HTTPS, gateway enforcement, secure cookies, proxy/client-IP topology and abuse controls.",
       "Saved business settings reviewed in the isolated database; seed settings do not reproduce the owner's saved configuration.",
-      "Synthetic-only preview with outgoing email forcibly disabled; live Brevo and management-email checks remain blocked.",
+      emailTestEnabled
+        ? "Ordinary appointment email and management grants are forcibly disabled. The fixed-inbox manual test is enabled; Brevo acceptance and inbox delivery remain unverified."
+        : "Synthetic-only preview with appointment email forcibly disabled and the optional manual email test disabled; live Brevo and management-email checks remain blocked.",
       "Encrypted backups, isolated restore, uptime/error alerts and compatible rollback.",
       "Public contact, mobile work location/travel, service area, retention and policy approval before public launch.",
     ],

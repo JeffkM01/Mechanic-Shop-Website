@@ -41,6 +41,24 @@ test("staging preflight rejects a production namespace, missing gate, disabled q
   ]) assert.equal(checkStagingConfiguration({ env: { ...fixture(), ...patch } }).configurationReady, false, Object.keys(patch)[0]);
 });
 
+test("staging preflight validates and honestly reports the optional manual email test without sending", t => {
+  t.mock.method(globalThis, "fetch", () => { throw new Error("Real email and network access forbidden"); });
+  const key = "synthetic-private-brevo-preflight-key-2026";
+  const env = { ...fixture(), STAGING_EMAIL_TEST_ENABLED: "true", BREVO_API_KEY: key };
+  const report = checkStagingConfiguration({ env });
+  assert.equal(report.configurationReady, true);
+  assert.equal(report.emailConnectionTestEnabled, true);
+  assert.equal(report.networkAccessed, false);
+  assert.ok(report.unverified.some(item => item.includes("fixed-inbox manual test is enabled")));
+  assert.equal(JSON.stringify(report).includes(key), false);
+  for (const patch of [{ STAGING_EMAIL_TEST_ENABLED: "yes" }, { BREVO_API_KEY: undefined }, { BREVO_API_KEY: "private\nkey" }, { DEPLOYMENT_STAGE: "production" }]) {
+    const invalid = checkStagingConfiguration({ env: { ...env, ...patch } });
+    assert.equal(invalid.configurationReady, false);
+    assert.ok(invalid.blockers.some(item => item.code === "STAGING_EMAIL_TEST"));
+  }
+  assert.equal(checkStagingConfiguration({ env: fixture() }).emailConnectionTestEnabled, false);
+});
+
 test("offline staging preflight neither connects to MongoDB nor calls fetch or changes the environment", t => {
   const env = fixture();
   const original = structuredClone(env);
@@ -71,6 +89,21 @@ test("staging CLI accepts only the documented argument and reports configuration
   const invalid = spawnSync(process.execPath, [script, "--json", "--json"], { env: fixture(), encoding: "utf8" });
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /^Usage:/);
+});
+
+test("staging CLI distinguishes the configured manual test from disabled appointment email without exposing its key", () => {
+  const key = "synthetic-private-brevo-key-for-cli-probe-tests";
+  const env = { ...fixture(), STAGING_EMAIL_TEST_ENABLED: "true", BREVO_API_KEY: key };
+  const result = spawnSync(process.execPath, [script], { env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /ordinary appointment email disabled/);
+  assert.match(result.stdout, /fixed-inbox manual test is enabled/);
+  assert.equal(result.stdout.includes("Staging keeps outgoing email disabled"), false);
+  assert.equal(`${result.stdout}${result.stderr}`.includes(key), false);
+  const json = spawnSync(process.execPath, [script, "--json"], { env, encoding: "utf8" });
+  assert.equal(json.status, 0, json.stderr);
+  assert.equal(JSON.parse(json.stdout).emailConnectionTestEnabled, true);
+  assert.equal(json.stdout.includes(key), false);
 });
 
 test("staging CLI does not load private development env files", async t => {

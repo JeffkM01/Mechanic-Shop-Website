@@ -1,0 +1,6 @@
+.staff-email-connection { margin-top: 32px; }
+.staff-email-connection a { color: inherit; overflow-wrap: anywhere; text-underline-offset: 4px; }
+.mechanic-page .staff-email-connection h2 { overflow-wrap: anywhere; }
+.mechanic-page .staff-email-connection p { overflow-wrap: anywhere; }
+.staff-email-connection .staff-inline-actions { margin-bottom: 20px; }
+.mechanic-page .staff-email-connection .staff-email-cooldown { margin: 14px 0 0; color: var(--muted); font-size: var(--text-secondary); }

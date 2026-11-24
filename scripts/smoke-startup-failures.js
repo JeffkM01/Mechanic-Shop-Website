@@ -29,6 +29,9 @@ const cases = [
   ["STAGING_DATABASE_NAME", { MONGODB_DATABASE: "wrong_database_test" }],
   ["STAGING_DATABASE_URI", { MONGODB_URI: undefined, MONGODB_URL: uri }],
   ["MECHANIC_ADMIN_PASSWORD", { MECHANIC_ADMIN_PASSWORD: undefined }],
+  ["EMAIL_TEST_CONFIGURATION", { STAGING_EMAIL_TEST_ENABLED: "invalid" }],
+  ["EMAIL_TEST_CONFIGURATION", { STAGING_EMAIL_TEST_ENABLED: "true" }],
+  ["EMAIL_TEST_CONFIGURATION", { DEPLOYMENT_STAGE: "production", STAGING_EMAIL_TEST_ENABLED: "true", BREVO_API_KEY: "synthetic-private-api-marker-for-negative-test" }],
   ["DATABASE_UNREACHABLE", {}],
 ];
 
@@ -47,7 +50,7 @@ for (const [code, patch] of cases) {
     assert.ok(logs.includes(`Could not start the appointment service. [${code}] `), "packaged bootstrap must identify the failed stage");
     assert.equal(logs.trim().split("\n").length, 1, "failed startup emits only one safe diagnostic");
     for (const secret of [uri, "synthetic-database-private-marker", baseline.STAGING_ACCESS_PASSWORD,
-      baseline.MECHANIC_ADMIN_PASSWORD, "synthetic-short"]) assert.equal(logs.includes(secret), false, "startup diagnostics must never echo synthetic secrets");
+      baseline.MECHANIC_ADMIN_PASSWORD, "synthetic-short", "synthetic-private-api-marker-for-negative-test"]) assert.equal(logs.includes(secret), false, "startup diagnostics must never echo synthetic secrets");
     assert.equal(logs.includes("mongodb://"), false);
     console.log(`Packaged startup [${code}]: exit 1 and redacted diagnostic verified.`);
   } finally {

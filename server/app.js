@@ -4,8 +4,9 @@ import { SchedulingError } from "./schedulingRules.js";
 import { createCustomerRoutes } from "./customerRoutes.js";
 import { serveBuiltFrontend } from "./staticFrontend.js";
 import { createOperationTracker } from "./operationTracker.js";
+import { EmailConnectionTestError } from "./emailConnectionTest.js";
 
-export function createApp({ Appointment, scheduling, auth, notifications, management = null, databaseReady = () => Appointment.db.readyState === 1,
+export function createApp({ Appointment, scheduling, auth, notifications, management = null, emailTest = null, databaseReady = () => Appointment.db.readyState === 1,
   runtimeReady = () => true, frontendDirectory = null, trustProxy = false, logger = console,
   operationTracker = createOperationTracker(), requestGate = null, bookingRateLimiter = null }) {
   const app = express();
@@ -97,6 +98,20 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
   app.post("/api/mechanic/activity", auth.requireAuth, auth.requireCsrf, auth.activity);
   app.post("/api/mechanic/logout", auth.requireAuth, auth.requireCsrf, auth.logout);
 
+  app.get("/api/mechanic/email-test", auth.requireAuth, (_req, res) => res.json(emailTest?.status() ?? { enabled: false }));
+  app.post("/api/mechanic/email-test", auth.requireAuth, auth.requireCsrf, track(async (req, res, next) => {
+    // Only an empty diagnostic request is accepted. Recipients, message text,
+    // queue IDs and links are never caller-controlled, including via query.
+    if (Object.keys(req.query).length || (req.body !== undefined && (!req.body || typeof req.body !== "object"
+      || Array.isArray(req.body) || Object.keys(req.body).length))) {
+      return res.status(400).json({ error: "Send an empty request for the fixed email connection test.", code: "INVALID_EMAIL_TEST_REQUEST" });
+    }
+    try {
+      if (!emailTest) throw new EmailConnectionTestError(503, "EMAIL_TEST_DISABLED", "The email connection test is not enabled in this environment.");
+      res.json(await emailTest.send());
+    } catch (error) { next(error); }
+  }));
+
   app.get("/api/mechanic/appointments", auth.requireAuth, track(async (req, res, next) => {
     const status = req.query.status || "pending";
     if (!["all", "pending", "confirmed", "declined", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
@@ -162,6 +177,10 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
   if (frontendDirectory) serveBuiltFrontend(app, frontendDirectory, { privateResponses: Boolean(requestGate) });
 
   app.use((error, _req, res, _next) => {
+    if (error instanceof EmailConnectionTestError) {
+      if (error.retryAfterSeconds) res.set("Retry-After", String(error.retryAfterSeconds));
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
     if (error instanceof SchedulingError) return res.status(error.status).json({ error: error.message, code: error.code, ...(error.fields ? { fields: error.fields } : {}) });
     if (error instanceof SyntaxError && error.status === 400 && "body" in error) return res.status(400).json({ error: "Invalid JSON request." });
     if (error.type === "entity.too.large") return res.status(413).json({ error: "Request is too large." });

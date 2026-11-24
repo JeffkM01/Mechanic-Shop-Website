@@ -15,7 +15,7 @@ try {
       console.log(report.configurationReady ? "CONFIGURATION CHECKS PASSED. Deployment still requires explicit approval." : "CONFIGURATION BLOCKED. Nothing was deployed.");
       for (const blocker of report.blockers) console.log(`[BLOCKED] ${blocker.code}: ${blocker.message}`);
       for (const item of report.unverified) console.log(`[UNVERIFIED] ${item}`);
-      console.log("Staging keeps outgoing email disabled and does not approve public bookings.");
+      console.log(`Staging keeps ordinary appointment email disabled. The fixed-inbox manual test is ${report.emailConnectionTestEnabled ? "enabled" : "disabled"}. Public bookings are not approved.`);
     }
     process.exitCode = report.configurationReady ? 0 : 1;
   }
