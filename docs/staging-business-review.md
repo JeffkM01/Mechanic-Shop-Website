@@ -1,19 +1,20 @@
 # Business decisions for staging and public launch
 
-Review recorded November 17, 2026. This document records supplied information and unresolved decisions; it does not approve unknown facts, modify saved settings, create provider accounts, or authorize a public launch.
+Review updated November 24, 2026, using owner-reported progress. This document records supplied information and unresolved decisions; it does not independently inspect provider accounts, approve unknown facts, modify saved settings, send email, or authorize a public launch.
 
 ## What is known
 
 - Edward is an independent/mobile mechanic who currently receives work through a dealership. The website is probably intended for individual vehicle owners; that audience still needs a final decision.
-- The user tentatively described the service area as St. Louis and up to about an hour into Illinois. This is **not** a verified city/ZIP list, travel policy, service radius, or commitment to perform repairs at customer homes.
-- The user allows clearly labeled phone/email placeholders for the staging review. No real public phone, email, shop address, or approved service location has been supplied. Do not invent one, publish a home/dealership address, or use an unowned mailbox.
+- The user has confirmed that Edward visits customers as a mobile mechanic. Exact service-area boundaries, site suitability, and travel arrangements remain unresolved. The tentative St. Louis/up-to-about-an-hour-into-Illinois description is **not** a verified city/ZIP list, travel policy, service radius, or promise that every customer location is suitable.
+- The owner reports purchasing `edsautoshop.com` through Porkbun, setting up Zoho Mail for `contact@edsautoshop.com`, and successfully testing incoming mail and replies. This is the supplied approved public inbox. A public business phone is still unknown; Edward plans a separate phone/number. No public storefront, home, or dealership address is approved.
+- The optional schema-version-1 `contact.emailConfirmed` flag publishes this reviewed email independently while aggregate `contact.confirmed` remains false. It does not approve unknown phone/location information or make the site ready for launch. Domain ownership and mailbox delivery do not establish custom-domain website routing or Brevo delivery.
 - Wiper Blade Replacement does **not** require mechanic approval in the current saved configuration. It remains the only automatic-eligible service. Other scheduler safeguards still apply.
 - The user accepts the current cancellation behavior: before the appointment starts, no cancellation fee. Public wording still needs a named owner review/effective date; do not infer a data-retention decision from this acceptance.
-- Render account access exists on a free account. MongoDB Compass is installed; an Atlas account/deployment has not been established by that fact. No paid plan, region, budget, or live provider setup is approved here.
+- PRs #15 and #16 are merged. The owner reports that the existing manually selected **Free** Render preview at `https://mechanic-shop-website.onrender.com` works, `/api/health` reports `connected`, and deployed booking settings and the synthetic appointment/staff workflow have been checked. This does not independently verify database permissions, real DNS/TLS, proxy security, notification delivery, backups, or monitoring. No additional paid plan or purchase is authorized here. The legacy paid `starter` Blueprint is not the owner's current manual Free configuration.
 
 ## Approved saved scheduling values
 
-This is a **non-executable reference**, not a complete settings export. The user supplied these current database values and said Edward approved them. Do not replace an existing database's settings with older repository seed defaults.
+This is a **non-executable reference**, not a complete settings export. The user supplied the snapshot below and said Edward approved it, then reported reviewing the deployed settings. No new full settings export was supplied. Review the intended database directly before treating this historical snapshot as an exact current export. Do not replace an existing database's settings with older repository seed defaults.
 
 | Setting | Supplied current value |
 | --- | --- |
@@ -51,7 +52,7 @@ Automatic confirmation also requires verified hours/capacity, an active nonprovi
 
 The current form has no dedicated private service-location field and the scheduler does not calculate travel time. A proposed area “about an hour away” is not a scheduling rule. A 30-minute Wiper slot with zero buffer cannot account for an unreviewed two-hour round trip.
 
-First decide where each type of work occurs: an approved agreed location, customer property if actually offered, or another arrangement. Then approve exact service-area boundaries, any travel limits/charges, and who checks access/safety/site suitability. Obtain permission before naming a dealership as a service location. Do not advertise a storefront or customer-home visits until that arrangement is confirmed.
+Customer visits have been confirmed as the general work arrangement. Still approve exact service-area boundaries, any travel limits/charges, and who checks access/safety/site suitability before finalizing individual visits. Obtain permission before naming a dealership as a service location; do not advertise a storefront or imply all customer properties can support the requested work. A suggested 30-minute travel buffer is a planning proposal only, not an approved setting or a guarantee that trips into Illinois fit that estimate. Do not silently replace the approved zero-minute buffer with it.
 
 The smallest safe first workflow is to collect a private service ZIP/general area, have Edward verify the location and travel time before finalizing a mobile visit, and reserve any necessary travel time through reviewed blocks/buffers. Keep street addresses out of public availability and ordinary logs. Collect a full address only when necessary for an accepted arrangement, through an approved private process.
 
@@ -61,30 +62,31 @@ That proposal affects the already-approved automatic Wiper flow: agree whether a
 
 These are review drafts with explicit unresolved placeholders. Do not mark the source-controlled business profile approved or insert them as final public policy until the missing facts are resolved.
 
-**Contact / location draft:** “Contact details are being prepared. Service area and appointment location will be confirmed before public booking opens.” For actual launch, replace this with an owned contact channel and the approved work arrangement. Do not use a fictitious telephone number, clickable placeholder inbox, street address, or customer-home service promise.
+**Contact / location draft:** “For appointment questions, email contact@edsautoshop.com. Edward is a mobile mechanic who visits customers; the service area, visit location, and travel arrangements need confirmation for the requested work.” The inbox is owner-reported as tested and may be published independently. Exact area, travel, and site-review wording still need approval. Do not invent a telephone number or publish a home/dealership address.
 
 **Booking draft:** “Appointment times reserve estimated service time, not guaranteed repair completion. Only eligible Wiper Blade Replacement requests may be automatically confirmed when the saved scheduling safeguards are met. Other requests require mechanic approval. Pending time reservations last 24 hours; your request remains on file after expiry, and availability must be checked again before approval.” Add the approved location/travel wording before mobile bookings go public.
 
 **Cancellation draft:** “You may cancel a pending or confirmed appointment before its scheduled start time without a cancellation fee. Use your secure appointment-management link, or contact the shop if the link is unavailable.” Add the actual contact route and effective date after review. Do not promise an automatic refund/payment feature; none exists here.
 
-**Privacy draft:** “We use the contact, vehicle, service, scheduling, and other information you submit to manage appointment requests and communications. Our planned service providers are Render for application hosting, MongoDB Atlas for database storage, and Brevo for appointment email. Provider selection/configuration must be confirmed before this draft becomes final. We retain records for [Edward-approved period and exceptions]. To request a correction or deletion, contact [owned monitored inbox]. We review requests manually, verify identity using an appropriate private process, and explain any records that must be retained for outstanding work or applicable obligations. The website does not provide automatic record deletion.”
+**Privacy draft:** “We use the contact, vehicle, service, scheduling, and other information you submit to manage appointment requests and communications. Our selected providers include Render for application hosting, MongoDB Atlas for database storage, and Zoho Mail for business correspondence. Brevo is the intended automated appointment-email provider; application email remains disabled in the staging preview. Provider configuration, agreements, and this wording must be reviewed before the notice becomes final. We retain records for [Edward-approved period and exceptions]. To request a correction or deletion, email contact@edsautoshop.com. The proposed process is a manual review with an appropriate private identity check and an explanation of any records that must be retained for outstanding work or applicable obligations. The website does not provide automatic record deletion.”
 
-Edward must choose a retention period for appointment records, declines/cancellations, notification history, and backups that fits actual business and legal/accounting/dealership obligations. No universal mechanic-shop duration or suggested example is approved by this document. Do not promise to erase an entire appointment or scheduling-ledger fragment without reviewing consistency, active commitments, and required retention.
+Edward must choose a retention period for appointment records, declines/cancellations, notification history, and backups that fits actual business and legal/accounting/dealership obligations. The suggested two years for past appointments and 90 days after the requested date for declined/cancelled requests are **unapproved proposals**, as is the detailed manual request/cleanup procedure. No universal mechanic-shop duration or suggested example is approved by this document. Do not promise to erase an entire appointment or scheduling-ledger fragment without reviewing consistency, active commitments, and required retention. Keep the privacy approval false even though a working request-contact inbox now exists.
 
 ## Decisions that still block public launch
 
 | Decision / evidence | Current status |
 | --- | --- |
-| Owned, monitored public contact email and phone/contact arrangement | Placeholders allowed only for staging. Email-only launch would need a deliberate profile/UI validation change; current profile requires phone, email, and address to mark contact confirmed. Do not insert a false address to satisfy it. |
-| Audience, exact service area, actual work location, permission to publish any location | Unresolved; tentative St. Louis/Illinois description only. |
+| Owned, monitored public contact email and phone/contact arrangement | `contact@edsautoshop.com` is supplied and mailbox send/receive passed according to the owner. `contact.emailConfirmed` can publish that inbox alone. Phone remains unknown and aggregate `contact.confirmed=false` remains a launch blocker; do not insert a false address to satisfy existing aggregate requirements. |
+| Audience, exact service area, actual work location, permission to publish any location | Customer visits are confirmed as the general mobile arrangement. Audience, exact cities/ZIPs, individual visit/site suitability, and travel boundaries still need review; St. Louis/Illinois wording remains tentative. |
 | Travel time and eligibility for automatic mobile Wiper bookings | Not modeled; owner decision required. |
-| Actual weekly hours, breaks, closures, blocks in intended database | Saved approval reported, actual geometry not supplied in the snapshot. |
+| Actual weekly hours, breaks, closures, blocks in intended database | Saved approval and a deployed-dashboard review are owner-reported; actual geometry was not supplied in the snapshot or independently inspected. |
 | Provisional services and service-copy accuracy | Tire Rotation and Cabin Air Filter remain provisional; review wording/availability. |
 | Final cancellation wording and effective date | Current behavior accepted by user; complete owner publication review. |
-| Retention, corrections/deletion inbox, identity check, backup retention | Undecided; no automated deletion promised. |
-| Provider account/region/plan/budget and agreements | Proposed Render/Atlas/Brevo; verify actual selection and billing before purchase. |
-| Least-privilege DB user, network/TLS, secrets, secure proxy/cookies | Must be configured and verified on the actual approved host. |
-| Controlled sender/reply inbox and deliverability | Preview email stays disabled; real send requires separate approval. |
+| Retention, corrections/deletion inbox, identity check, backup retention | Working public inbox identified; retention, request verification, cleanup, and backup-retention procedure remain unapproved. No automated deletion promised. |
+| Provider account/region/plan/budget and agreements | Owner reports Free Render, Atlas, Porkbun domain, and Zoho inbox setup. Brevo remains intended for automation. Confirm current plans, agreements, and any future paid quote; no repurchase or Blueprint import is required for this preview. |
+| Least-privilege DB user, network/TLS, secrets, secure proxy/cookies | Owner reports connected health and working staging. Account roles, network restrictions, and proxy/cookie behavior still require actual-host verification. |
+| Controlled sender/reply inbox and deliverability | Zoho inbox tested by owner. Brevo sender/domain authentication, delivery, replies, and management links are unverified. Preview email stays disabled; real sends require guarded recipients and separate approval. |
+| Custom-domain HTTPS and SMTP compatibility | `edsautoshop.com` ownership/mail setup is reported complete; Render routing/TLS remain unverified. Current app uses SMTP; Free SMTP restrictions were not independently verified, and idle behavior prevents relying on continuous retries. See the domain/email steps in [Render staging](render-staging.md#connect-the-purchased-domain-without-disturbing-zoho). |
 | Protected backups, isolated restoration, alerts and rollback | Runbooks exist; hosted drills remain unperformed. |
 
 Keeping the checked-in `shared/businessProfile.json` unapproved is intentional while these facts remain unknown. `npm run check:launch` should continue to report public-launch blockers; passing lint/build/tests does not override them.

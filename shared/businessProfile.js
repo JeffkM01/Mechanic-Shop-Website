@@ -35,18 +35,23 @@ export function validateBusinessProfile(value) {
   keys(value, ["schemaVersion", "name", "contact", "privacy", "cancellation"], "Business profile");
   if (value.schemaVersion !== 1) throw new Error("Use business-profile schema version 1.");
   const name = text(value.name, 80, "Shop name", false);
-  keys(value.contact, ["confirmed", "phone", "email", "addressLines"], "Public contact details");
+  const hasEmailConfirmation = plain(value.contact) && Object.hasOwn(value.contact, "emailConfirmed");
+  keys(value.contact, ["confirmed", "phone", "email", "addressLines", ...(hasEmailConfirmation ? ["emailConfirmed"] : [])], "Public contact details");
   if (typeof value.contact.confirmed !== "boolean") throw new Error("Contact confirmation must be true or false.");
+  if (hasEmailConfirmation && typeof value.contact.emailConfirmed !== "boolean") throw new Error("Email confirmation must be true or false.");
   const phone = text(value.contact.phone, 24, "Public phone");
   const email = text(value.contact.email, 254, "Public email");
   if (phone !== null && !isValidUsPhone(phone)) throw new Error("Public phone must be a valid U.S. phone number.");
   if (email !== null && (!isValidEmailAddress(email)
     || /\.(?:example|invalid|test|localhost)$/i.test(email)
     || /(?:^|\.)example\.(?:com|net|org)$/i.test(email.split("@")[1]))) throw new Error("Provide a valid public email address rather than an example address.");
+  if (value.contact.emailConfirmed && !email) throw new Error("Confirm an actual public email address before marking email confirmed.");
   if (!Array.isArray(value.contact.addressLines) || value.contact.addressLines.length > 4) throw new Error("Public address may contain up to four lines.");
   const addressLines = value.contact.addressLines.map(line => text(line, 120, "Address line", false));
   if (value.contact.confirmed && (!phone || !email || !addressLines.length)) throw new Error("Confirm actual phone, email, and address before marking contact details confirmed.");
-  const contact = { confirmed: value.contact.confirmed, phone, email, addressLines };
+  // Existing version-1 profiles retain their shape and aggregate approval.
+  // A separately approved inbox never approves phone, location or policies.
+  const contact = { confirmed: value.contact.confirmed, ...(hasEmailConfirmation ? { emailConfirmed: value.contact.emailConfirmed } : {}), phone, email, addressLines };
 
   keys(value.privacy, ["approved", "effectiveDate", "hostingProvider", "databaseProvider", "emailProvider", "retentionPolicy", "requestInstructions"], "Privacy information");
   if (typeof value.privacy.approved !== "boolean") throw new Error("Privacy approval must be true or false.");

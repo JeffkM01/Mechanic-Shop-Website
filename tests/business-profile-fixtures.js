@@ -13,6 +13,19 @@ export function draftBusinessProfile() {
   };
 }
 
+export function emailOnlyBusinessProfile() {
+  const profile = draftBusinessProfile();
+  profile.contact.email = "contact@synthetic-shop-unit-check.net";
+  profile.contact.emailConfirmed = true;
+  return profile;
+}
+
+export function unapprovedEmailBusinessProfile() {
+  const profile = emailOnlyBusinessProfile();
+  profile.contact.emailConfirmed = false;
+  return profile;
+}
+
 export function approvedBusinessProfile() {
   return {
     schemaVersion: 1,

@@ -1,7 +1,7 @@
 import axe from "axe-core";
 import { test, expect } from "./cancellation-fixture.js";
 import { businessProfile, validateBusinessProfile } from "../shared/businessProfile.js";
-import { approvedBusinessProfile, draftBusinessProfile } from "./business-profile-fixtures.js";
+import { approvedBusinessProfile, draftBusinessProfile, emailOnlyBusinessProfile, unapprovedEmailBusinessProfile } from "./business-profile-fixtures.js";
 import { formatBookingDate } from "../src/utils/bookingDates.js";
 
 // Only the synthetic isolated Mongo/Express fixture is used. No .env, normal
@@ -14,15 +14,23 @@ const DRAFT = "Draft — awaiting Edward’s approval";
 
 async function assertContactDetails(page, profile) {
   if (!profile.contact.confirmed) {
-    for (const value of ["Phone number to be confirmed", "Public email to be confirmed", "Appointment location to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
+    for (const value of ["Phone number to be confirmed", "Appointment location to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Service area & location" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Visit the shop" })).toHaveCount(0);
-    await expect(page.locator("main a[href^='tel:'], main a[href^='mailto:']")).toHaveCount(0);
+    await expect(page.locator("main a[href^='tel:']")).toHaveCount(0);
+    await expect(page.getByText("Contact details are being confirmed.", { exact: true })).toBeVisible();
   } else {
     await expect(page.getByRole("link", { name: profile.contact.phone, exact: true })).toHaveAttribute("href", /^tel:\+/);
-    await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(profile.contact.email)}`);
     for (const line of profile.contact.addressLines) await expect(page.locator("main")).toContainText(line);
     await expect(page.getByText("Contact details are being confirmed.", { exact: true })).toHaveCount(0);
+  }
+  if (profile.contact.confirmed || profile.contact.emailConfirmed) {
+    await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(profile.contact.email)}`);
+    await expect(page.getByText("Public email to be confirmed", { exact: true })).toHaveCount(0);
+  } else {
+    await expect(page.getByText("Public email to be confirmed", { exact: true })).toBeVisible();
+    await expect(page.locator("main a[href^='mailto:']")).toHaveCount(0);
+    if (profile.contact.email) await expect(page.locator("main")).not.toContainText(profile.contact.email);
   }
 }
 
@@ -210,7 +218,7 @@ test("opens the configured until-start cancellation policy without inventing fee
   await expect(page.getByRole("link", { name: /reschedule/i })).toHaveCount(0);
 });
 
-for (const [state, fixture] of [["draft", draftBusinessProfile], ["approved", approvedBusinessProfile]]) {
+for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only approved", emailOnlyBusinessProfile], ["non-null unapproved email", unapprovedEmailBusinessProfile], ["approved", approvedBusinessProfile]]) {
   test(`renders ${state} synthetic contact and policies through the actual public routes`, async ({ page }) => {
     const profile = fixture();
     const assertSupplied = await useSyntheticProfile(page, profile);
@@ -218,6 +226,7 @@ for (const [state, fixture] of [["draft", draftBusinessProfile], ["approved", ap
     assertSupplied();
     await assertContactDetails(page, profile);
     await assertUnconfirmedHours(page);
+    if (Object.hasOwn(profile.contact, "emailConfirmed")) await audit(page);
 
     await page.locator(".site-footer").getByRole("link", { name: "Privacy information", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Privacy information", exact: true })).toBeVisible();
@@ -226,11 +235,17 @@ for (const [state, fixture] of [["draft", draftBusinessProfile], ["approved", ap
     if (profile.privacy.approved) {
       await expect(page.locator("main")).toContainText(profile.privacy.retentionPolicy);
       await expect(page.locator("main")).toContainText(profile.privacy.requestInstructions);
-      await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toBeVisible();
     } else {
       await expect(page.locator("main")).toContainText("The shop has not yet confirmed its retention period and deletion process.");
       await expect(page.locator("main")).toContainText("The process for requesting access, corrections, or deletion of personal information is awaiting the shop's confirmation.");
     }
+    if (profile.contact.confirmed || profile.contact.emailConfirmed) {
+      await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(profile.contact.email)}`);
+    } else {
+      await expect(page.locator("main a[href^='mailto:']")).toHaveCount(0);
+      if (profile.contact.email) await expect(page.locator("main")).not.toContainText(profile.contact.email);
+    }
+    if (Object.hasOwn(profile.contact, "emailConfirmed")) await audit(page);
 
     await page.locator(".site-footer").getByRole("link", { name: "Cancellation policy", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Cancellation policy", exact: true })).toBeVisible();

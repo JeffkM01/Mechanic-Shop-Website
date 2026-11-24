@@ -8,6 +8,8 @@ Before accepting customer bookings, Edward must approve the public contact detai
 
 Record the reviewed public contact details, provider descriptions, retention/request instructions, effective dates, and approval flags in `shared/businessProfile.json`, then validate and build that reviewed revision. This file is included in the public website; it must never contain credentials or private customer information. A valid approved profile is supported; leaving the shipped draft values in place keeps the offline launch check blocked.
 
+Version-1 profiles may also set `contact.emailConfirmed` to a boolean. A true value requires a valid public email and publishes that inbox on Contact and Privacy even while aggregate `contact.confirmed` remains false. Older profiles without the optional flag keep their existing aggregate behavior; a non-null draft email alone is never published. Partial email approval does not approve a phone, location, privacy policy, retention period, or public launch. The owner has tested `contact@edsautoshop.com` in Zoho Mail; automated appointment delivery still uses the separate Brevo integration and remains disabled in protected staging. A mobile-business profile must be reviewed before full contact approval; never publish a home address merely to satisfy the current aggregate validator.
+
 Run `npm run check:launch` using the intended runtime environment. This offline configuration check does not load `.env`, connect to a database, send email, verify TLS, or prove a successful backup/restore. Resolve its configuration blockers and separately complete its unverified operational items. Do not paste credentials into issues or chat.
 
 ## Hosting shape

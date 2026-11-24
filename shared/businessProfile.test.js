@@ -82,6 +82,47 @@ test("contact confirmation requires bounded public phone, email and address inst
   assert.ok(businessProfileLaunchIssues(unconfirmed).some(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED"));
 });
 
+test("an independently confirmed inbox does not approve missing phone, location or policies", () => {
+  const source = draftBusinessProfile();
+  source.contact.email = "contact@synthetic-shop-unit-check.net";
+  source.contact.emailConfirmed = true;
+  const validated = validateBusinessProfile(source);
+  assert.deepEqual(validated, source);
+  assert.equal(validated.contact.confirmed, false);
+  assert.equal(validated.contact.phone, null);
+  assert.deepEqual(validated.contact.addressLines, []);
+  const codes = businessProfileLaunchIssues(validated).map(issue => issue.code);
+  for (const code of ["SHOP_CONTACT_UNCONFIRMED", "PRIVACY_NOTICE_UNAPPROVED", "PRIVACY_RETENTION_POLICY_UNCONFIRMED", "CANCELLATION_POLICY_UNAPPROVED"]) assert.ok(codes.includes(code), code);
+  source.contact.confirmed = true;
+  assert.throws(() => validateBusinessProfile(source), /Confirm actual phone, email, and address/);
+});
+
+test("independent inbox approval requires a boolean flag and a valid public address", () => {
+  for (const emailConfirmed of [undefined, null, "true", 1, {}, []]) {
+    const source = draftBusinessProfile();
+    source.contact.email = "contact@synthetic-shop-unit-check.net";
+    source.contact.emailConfirmed = emailConfirmed;
+    assert.throws(() => validateBusinessProfile(source), /Email confirmation/);
+  }
+  for (const email of [null, "", "contact@example.com", "contact@site.invalid", "not-an-email", "contact@synthetic-shop-unit-check.net\r\nInjected"]) {
+    const source = draftBusinessProfile();
+    source.contact.email = email;
+    source.contact.emailConfirmed = true;
+    assert.throws(() => validateBusinessProfile(source));
+  }
+});
+
+test("legacy and explicitly unapproved draft inboxes retain their approval state", () => {
+  const source = draftBusinessProfile();
+  source.contact.email = "draft@synthetic-shop-unit-check.net";
+  const legacy = validateBusinessProfile(source);
+  assert.deepEqual(legacy, source);
+  assert.equal(Object.hasOwn(legacy.contact, "emailConfirmed"), false);
+  source.contact.emailConfirmed = false;
+  assert.deepEqual(validateBusinessProfile(source), source);
+  assert.ok(businessProfileLaunchIssues(source).some(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED"));
+});
+
 test("published privacy information requires all reviewed providers, retention, request handling, contact and date", () => {
   for (const field of ["effectiveDate", "hostingProvider", "databaseProvider", "emailProvider", "retentionPolicy", "requestInstructions"]) {
     const source = approvedFixture(); source.privacy[field] = null;

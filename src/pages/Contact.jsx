@@ -8,6 +8,7 @@ import "../styles/AboutContact.css";
 
 export default function Contact() {
   const contact = businessProfile.contact;
+  const publicEmail = contact.confirmed || contact.emailConfirmed ? contact.email : null;
   const hours = usePublicShopHours();
   const verified = hours.data?.verified === true;
   const weekdays = [["Monday", "1"], ["Tuesday", "2"], ["Wednesday", "3"], ["Thursday", "4"], ["Friday", "5"], ["Saturday", "6"], ["Sunday", "0"]];
@@ -27,7 +28,7 @@ export default function Contact() {
       <section className="site-container section-pad contact-details" aria-labelledby="contact-details-heading">
         <div className="contact-intro">
           <div><p className="eyebrow">GET IN TOUCH</p><h2 id="contact-details-heading">A conversation away.</h2></div>
-          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>Contact details are being confirmed.</strong> Public phone, email, service area, and appointment location are awaiting approval. You can review appointment-request times online; travel arrangements still need confirmation.</span></p>}
+          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>Contact details are being confirmed.</strong> {publicEmail ? "You can email us with appointment questions. Public phone, service area, and appointment location are awaiting approval." : "Public phone, email, service area, and appointment location are awaiting approval."} You can review appointment-request times online; travel arrangements still need confirmation.</span></p>}
         </div>
         <div className="contact-cards">
           <article className="contact-card">
@@ -37,10 +38,10 @@ export default function Contact() {
             <p>{contact.confirmed ? "Contact the shop to discuss your vehicle or an existing appointment." : "A callable shop number will appear after Edward confirms it."}</p>
           </article>
           <article className="contact-card">
-            <div className="contact-card-top"><Icon name="mail" /><span className="contact-placeholder-tag">{contact.confirmed ? "Shop contact" : "To be confirmed"}</span></div>
+            <div className="contact-card-top"><Icon name="mail" /><span className="contact-placeholder-tag">{publicEmail ? "Shop contact" : "To be confirmed"}</span></div>
             <h3>Send an email</h3>
-            <p className="contact-detail-value contact-email">{contact.confirmed ? <a href={`mailto:${encodeURIComponent(contact.email)}`}>{contact.email}</a> : "Public email to be confirmed"}</p>
-            <p>{contact.confirmed ? "Use this address for appointment questions and shop inquiries." : "An approved public inbox will appear here when it is ready."}</p>
+            <p className="contact-detail-value contact-email">{publicEmail ? <a href={`mailto:${encodeURIComponent(publicEmail)}`}>{publicEmail}</a> : "Public email to be confirmed"}</p>
+            <p>{publicEmail ? "Use this address for appointment questions and shop inquiries." : "An approved public inbox will appear here when it is ready."}</p>
           </article>
           <article className="contact-card">
             <div className="contact-card-top"><Icon name="pin" /><span className="contact-placeholder-tag">{contact.confirmed ? "Approved location" : "To be confirmed"}</span></div>

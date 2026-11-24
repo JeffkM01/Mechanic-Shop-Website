@@ -6,6 +6,7 @@ import "../styles/Policies.css";
 
 export default function Privacy() {
   const { contact, privacy } = businessProfile;
+  const publicEmail = contact.confirmed || contact.emailConfirmed ? contact.email : null;
   return <main className="customer-page policy-page">
     <PageHero eyebrow={businessProfile.name} title="Privacy information" description="How appointment information is used, where it is processed, and how to contact the shop about it." />
     <div className="site-container section-pad policy-content">
@@ -20,7 +21,7 @@ export default function Privacy() {
       <section aria-labelledby="privacy-access"><h2 id="privacy-access">Cookies and private appointment links</h2><p>Staff sign-in and secure customer appointment access use limited session cookies. Unsent appointment details are held in the page's memory while you complete the form.</p><p>A management link sent by email can authorize viewing and cancelling that one appointment. Keep the link private. Links and limited access sessions expire; if access is unavailable, contact the shop.</p></section>
       <section aria-labelledby="privacy-tracking"><h2 id="privacy-tracking">Analytics and other uses</h2><p>The current application does not include advertising or analytics integrations. Hosting and email providers may process operational information under their own service terms. Any changes to those services or data uses need to be reflected in this notice.</p></section>
       <section aria-labelledby="privacy-retention"><h2 id="privacy-retention">How long records are kept</h2><p>{privacy.retentionPolicy || "The shop has not yet confirmed its retention period and deletion process. The current system keeps appointment requests and cancellation history on file until retention is handled separately."}</p></section>
-      <section aria-labelledby="privacy-requests"><h2 id="privacy-requests">Questions and information requests</h2><p>{privacy.requestInstructions || "The process for requesting access, corrections, or deletion of personal information is awaiting the shop's confirmation."}</p>{contact.confirmed ? <p>Contact {businessProfile.name} at <a href={`mailto:${encodeURIComponent(contact.email)}`}>{contact.email}</a>.</p> : <p>The shop's public contact details are also awaiting confirmation.</p>}<Link className="text-link" to="/contact">Contact and shop details</Link></section>
+      <section aria-labelledby="privacy-requests"><h2 id="privacy-requests">Questions and information requests</h2><p>{privacy.requestInstructions || "The process for requesting access, corrections, or deletion of personal information is awaiting the shop's confirmation."}</p>{publicEmail ? <p>Contact {businessProfile.name} at <a href={`mailto:${encodeURIComponent(publicEmail)}`}>{publicEmail}</a>.</p> : <p>The shop's public contact details are also awaiting confirmation.</p>}<Link className="text-link" to="/contact">Contact and shop details</Link></section>
       <div className="policy-actions"><Link className="button button-secondary" to="/cancellation-policy">Cancellation policy</Link><Link className="text-link" to="/">Back to the shop</Link></div>
     </div>
   </main>;
