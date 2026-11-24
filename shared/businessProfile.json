@@ -3,8 +3,9 @@
   "name": "Ed's Auto Shop",
   "contact": {
     "confirmed": false,
+    "emailConfirmed": true,
     "phone": null,
-    "email": null,
+    "email": "contact@edsautoshop.com",
     "addressLines": []
   },
   "privacy": {
@@ -12,7 +13,7 @@
     "effectiveDate": null,
     "hostingProvider": null,
     "databaseProvider": null,
-    "emailProvider": "Brevo",
+    "emailProvider": "Brevo for automated appointment messages; Zoho Mail for business correspondence",
     "retentionPolicy": null,
     "requestInstructions": null
   },

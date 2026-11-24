@@ -1,16 +1,22 @@
 # Render staging preparation
 
-This is a deployment proposal and operator runbook. No Render service, Atlas database, purchase, public booking launch, or email delivery is authorized by this document. Obtain explicit approval for the reviewed staging revision and its cost before creating/deploying the Render service. Keep the public launch separate from that approval.
+This is an operator runbook for the restricted staging preview and subsequent review. The owner has deployed the preview; this document does not authorize another deployment, a purchase, public booking launch, or real notification delivery. Review and approve any additional deployment or cost separately from public launch.
 
-The staging branch builds on the unmerged production-readiness work in [PR #15](https://github.com/JeffkM01/Mechanic-Shop-Website/pull/15). Merge/review order and the final main revision need checking before deployment; this document does not authorize merging either PR.
+The production-readiness work in [PR #15](https://github.com/JeffkM01/Mechanic-Shop-Website/pull/15) and staging preparation in [PR #16](https://github.com/JeffkM01/Mechanic-Shop-Website/pull/16) have been merged. Start subsequent changes from the latest reviewed `main`; retain the reviewed revision for rollback. This document does not authorize merging or deploying new work.
 
-## Proposed shape
+## Owner-reported state on November 24, 2026
 
-Use one paid, always-running Render Docker Web Service serving React and Express from the same HTTPS origin, plus a separate MongoDB Atlas database. Brevo remains the intended email provider, but outgoing email is disabled for this staging preview. A custom domain and Google Workspace are unnecessary for this review; Render's assigned HTTPS hostname is sufficient.
+The owner reports that the manually configured **Free** Render service at `https://mechanic-shop-website.onrender.com` works, `/api/health` reports `connected`, and the deployed booking settings and synthetic appointment/staff workflow have been checked. The owner also reports registering `edsautoshop.com` through Porkbun and successfully sending and receiving mail with the Zoho mailbox `contact@edsautoshop.com`. These are owner-reported milestones, not independent inspection of the host, DNS, Atlas permissions, or mailbox. Custom-domain website routing/TLS, Brevo delivery, hosted backup recovery, and alerts remain unverified.
+
+## Current preview and intended production shape
+
+The existing restricted Free preview serves React and Express from the same Render HTTPS origin, with a separate MongoDB Atlas database. Keep outgoing email disabled. There is no need to create another service, purchase a domain again, or apply the paid Blueprint merely to continue this preview. An always-running paid service remains the proposed production shape, subject to a separately reviewed quote and SMTP compatibility. Confirm the current plan's limitations before real notification operation: this application uses SMTP, and Free-service idle behavior prevents relying on a continuously running retry dispatcher. Current SMTP port restrictions were not independently verified here; check the selected service and [Render's Free-service documentation](https://render.com/docs/free). An HTTPS email API being reachable would not establish compatibility with this SMTP integration.
+
+The purchased domain and Zoho mailbox can be connected without buying Google Workspace. The assigned Render hostname remains sufficient for protected staging while custom-domain setup is reviewed. Brevo remains the intended automated notification provider; Zoho hosts business correspondence. Neither mailbox setup nor domain ownership enables application email.
 
 The root [Dockerfile](../Dockerfile) already builds the frontend and starts the Node API. Do not choose a `server` root directory: the image needs the root package files, frontend, and `shared` directory. There is no separate Vercel site, Node worker service, local MongoDB dependency, or persistent application disk in this proposal. The API itself runs the email dispatcher when email is enabled in an approved non-preview environment.
 
-See [provider research](render-provider-reference.md) for current verified costs, provider restrictions, and items that still require confirmation in the actual provider dashboard. Account ownership and private configuration stay with the owner.
+See [provider research](render-provider-reference.md) for the dated source review and the prices, provider restrictions, and account-specific facts that still require confirmation in the actual provider dashboard. Account ownership and private configuration stay with the owner.
 
 ## Account and database preparation
 
@@ -27,16 +33,16 @@ Do not connect a local test suite to Atlas. Automated tests must continue to own
 
 ## Reviewable Render settings
 
-The proposed Blueprint is [deploy/render-staging.yaml](../deploy/render-staging.yaml). It is a review artifact; merely committing it does not deploy anything. Importing a Blueprint can create billable resources and begin a first deployment, even with subsequent automatic deployments disabled. Do not import/apply it before explicit deployment and billing approval.
+The legacy proposed Blueprint is [deploy/render-staging.yaml](../deploy/render-staging.yaml). Its paid `starter` plan is a review artifact, **not the owner's existing manually selected Free service**. It need not be imported to continue that service. Merely committing it does not deploy anything, but importing a Blueprint can create billable resources and begin a first deployment, even with subsequent automatic deployments disabled. Do not import/apply it before explicit deployment and billing approval.
 
 | Setting | Proposed value or owner action |
 | --- | --- |
-| Repository / branch | Reviewed staging feature branch, pinned to the approved commit before deployment. Recheck PR #15 dependency first. |
+| Repository / branch | Latest reviewed `main` revision, pinned to the approved commit before a deployment. PRs #15 and #16 are merged; review subsequent changes separately. |
 | Runtime / build | Docker; repository root context; root `Dockerfile`; default container command. |
-| Plan / region | One always-running paid instance; price and selected region reviewed before creation. A free account does not mean this service is free. |
+| Plan / region | Owner-selected Free instance for this restricted, no-email preview. Confirm the actual region/plan in the Dashboard. Any future paid production plan or additional service needs a separately reviewed quote. |
 | Instance count | Exactly one. No autoscaling, PM2 cluster, duplicate worker, or second live deployment of the same database. |
 | Auto deployment | Off. Initial creation still requires an explicitly approved deployment. |
-| Public routing | Assigned Render HTTPS origin serves both the website and `/api`; no wildcard credentialed CORS. |
+| Public routing | Assigned Render HTTPS origin serves both the website and `/api`; review the custom-domain steps below before changing the canonical origin. No wildcard credentialed CORS. |
 | Health check | `/api/health`, with no Basic credentials. It reports only minimal readiness, never customer data. |
 | Shutdown | App grace deadline shorter than the provider's verified termination window. A nonzero timeout exit requires reconciliation before reopening. |
 | Database | Only the clean `eds_staging_*` namespace, with the restricted account described above. No local database files or application disk. |
@@ -56,7 +62,7 @@ Set these using Render's private runtime environment controls. Avoid sharing ful
 | `MONGODB_URI` | Atlas connection string naming only the reviewed staging database. |
 | `MONGODB_DATABASE` | Exact same explicit `eds_staging_*` database name. Startup validates the selection before connecting; roles, cluster identity, TLS, and emptiness remain operator checks. |
 | `MECHANIC_ADMIN_PASSWORD` | Unique strong staff password; private and different from all other credentials. |
-| `PUBLIC_WEBSITE_ORIGIN` | Exact assigned HTTPS origin, no path/query/fragment. Obtain it from the service, then review before issuing any management links. |
+| `PUBLIC_WEBSITE_ORIGIN` | Exact working HTTPS origin, no path/query/fragment. Use the assigned Render origin until the chosen custom domain's routing and TLS have been verified; review before issuing any management links. |
 | `APPOINTMENT_MANAGEMENT_SECRET` | Stable cryptographically random 32–128-byte secret encoded as base64/base64url; generate privately once and retain in protected secret storage. Do not regenerate each deploy. |
 | `TRUST_PROXY` | `false` until actual trusted proxy IPs/CIDRs and the real forwarding behavior are verified. Do not guess a hop count or use blanket trust. |
 | SMTP / sender / staff inbox | Leave unset for this preview. Never configure real customer recipients as test data. |
@@ -84,6 +90,36 @@ Use [the business/settings review](staging-business-review.md). The user's appro
 For a new empty staging database, enter reviewed **synthetic** hours/settings through the protected dashboard. Label the test schedule as synthetic in the review record. Do not mark the actual business hours/capacity verified from an incomplete text snapshot. The staging runtime does not disable the user's approved automation; eligibility and status decisions continue to be enforced by the normal scheduler.
 
 The no-email preview can test saved appointment decisions, conflicts, staff sessions, and persistence. It cannot prove Brevo delivery or emailed management links. A later controlled-mail test needs its own approved sender/reply inbox, owned recipient allowlist, recipient protection, and approval to send. Do not remove staging mode simply to turn email on: that also removes its access/database safeguards. Reconcile/suppress obsolete synthetic queue entries through a reviewed record-specific process before enabling any dispatcher; saved pending notifications may otherwise send later.
+
+## Connect the purchased domain without disturbing Zoho
+
+The owner reports that `edsautoshop.com` ownership and the Zoho mailbox work. Website routing is a separate check. The following are owner actions to review; no provider settings are changed by this runbook.
+
+1. Open the **existing** Render service, then **Settings → Custom Domains**, and add `edsautoshop.com`. Review whether Render also requests a `www` alias and choose one canonical HTTPS hostname.
+2. Copy the actual DNS record type, name, and target shown by Render. Use its current instructions rather than a remembered Render IP address. A CNAME target is a hostname, not an `https://` URL or a path.
+3. In Porkbun **Domain Management → edsautoshop.com → DNS**, change only the website A/ALIAS/CNAME records needed for those instructions. Resolve conflicting website records individually. Preserve Zoho's MX records, domain-verification TXT, SPF, DKIM, and other unrelated records. Keep the existing DNS provider/nameservers unless a separately reviewed migration is necessary.
+4. Return to Render to verify the domain and wait for its HTTPS certificate to become valid. Check the intended apex/`www` behavior, homepage, `/mechanic`, direct page links, and `/api/health` from an external device. Verify the staging password still protects the website and private APIs. Test the Zoho mailbox again after DNS changes.
+5. Only after the canonical custom domain actually works over HTTPS, review setting `PUBLIC_WEBSITE_ORIGIN=https://edsautoshop.com` if the apex was chosen. Use the actual chosen origin if different. Keep `DEPLOYMENT_STAGE=staging` and the stable `APPOINTMENT_MANAGEMENT_SECRET`; changing the public hostname does not authorize real management links or public bookings.
+
+The optional schema-version-1 field `contact.emailConfirmed` allows the approved `contact@edsautoshop.com` inbox to appear independently of unknown phone/location details. It does not set aggregate `contact.confirmed`, approve privacy wording, or clear the public-launch contact blocker. The phone, exact service area, travel arrangements, and remaining policies still need review.
+
+## Prepare Brevo authentication while keeping preview email off
+
+Zoho receives and sends ordinary business correspondence. Brevo will deliver application notifications when a later guarded phase is approved. The successful Zoho mailbox test does not establish that Brevo is authenticated or that Render can reach its SMTP service.
+
+1. In Brevo, add/authenticate `edsautoshop.com` and verify the proposed sender `contact@edsautoshop.com` using the owner's account. Copy only the records Brevo actually requests. Preserve Zoho MX and DKIM records. Keep one SPF TXT record per hostname and one DMARC record at its applicable name; combine compatible sender requirements where necessary rather than creating competing records. Do not invent a Brevo SPF include or blindly replace an existing Zoho policy.
+2. Review these **proposed later configuration values**, which are public sender/inbox addresses rather than secrets:
+
+   ```text
+   MAIL_FROM=Ed's Auto Shop <contact@edsautoshop.com>
+   MECHANIC_NOTIFICATION_EMAIL=contact@edsautoshop.com
+   ```
+
+   Existing customer templates use `MECHANIC_NOTIFICATION_EMAIL` as Reply-To; staff request/cancellation notices reply to the customer's address. There is no separate `MAIL_REPLY_TO` variable. Sender authentication, staff notice delivery, and customer replies each need a controlled test.
+3. Obtain Brevo's SMTP host, port, login, and SMTP key privately when that test is approved. A Brevo SMTP key is not the Zoho mailbox password. Keep these credentials out of source control, chat, images, and frontend variables. Confirm the selected Render service can reach the required SMTP host/port and can run retries reliably; current Free restrictions remain an operator verification requirement. Do not assume that buying a paid plan alone proves connectivity.
+4. Keep SMTP unset for the current preview. The staging runtime intentionally suppresses delivery and management-link issuance even if SMTP credentials are supplied. A later controlled-mail phase requires separately reviewed recipient protection, an owned test-recipient allowlist, handling of accumulated synthetic notifications, and explicit send approval. There is no supported instruction to enable email merely by changing `DEPLOYMENT_STAGE`; that would also remove the preview safeguards.
+
+Record Brevo for automated notifications **and Zoho Mail for business correspondence** in the privacy-provider draft. Keep privacy approval false until retention, request handling, provider agreements, and the remaining contact/policy details have been approved.
 
 ## Backups, monitoring, recovery, and rollback
 
@@ -143,4 +179,4 @@ Only after separate approval and guarded recipient setup should a controlled Bre
 
 ## Next owner action
 
-Check whether an **Atlas account/deployment** exists in addition to Compass. If not, create the Atlas account in the owner's name and review the free-tier deployment screen. Do not paste the connection string here or create a paid Render service yet. Report only whether Atlas is available and the proposed region; the next step can then be reviewed without exposing credentials.
+Review the existing service's **Custom Domains** screen and connect `edsautoshop.com` using the DNS values Render supplies, preserving Zoho records as described above. Report whether domain verification and HTTPS succeed; share only public DNS names/values when help is needed. Keep staging protection and SMTP-off behavior in place. Brevo authentication, guarded delivery tests, phone/service-area/travel decisions, privacy approval, backup recovery, and monitoring remain separate next steps; do not recreate Atlas or repurchase a domain for this review.
