@@ -13,6 +13,8 @@ const preflight = spawnSync(process.execPath, ["scripts/check-staging.js", "--js
 });
 assert.equal(preflight.status, 0, "Packaged offline staging check must validate the synthetic environment");
 assert.equal(JSON.parse(preflight.stdout).deploymentApproved, false);
+const manualTestEnabled = process.env.STAGING_EMAIL_TEST_ENABLED === "true";
+assert.equal(JSON.parse(preflight.stdout).emailConnectionTestEnabled, manualTestEnabled);
 const origin = "http://127.0.0.1:3001";
 const authorization = `Basic ${Buffer.from(`staging:${process.env.STAGING_ACCESS_PASSWORD}`).toString("base64")}`;
 let healthy = false;
@@ -54,6 +56,13 @@ const session = await login.json();
 assert.equal((await fetch(`${origin}/api/mechanic/appointments`, { headers: { authorization } })).status, 401);
 const privateHeaders = { authorization, cookie: sessionCookie, "Content-Type": "application/json" };
 assert.equal((await fetch(`${origin}/api/mechanic/appointments`, { headers: privateHeaders })).status, 200);
+assert.equal((await fetch(`${origin}/api/mechanic/email-test`, { headers: { authorization } })).status, 401);
+const probeStatus = await fetch(`${origin}/api/mechanic/email-test`, { headers: privateHeaders });
+assert.equal(probeStatus.status, 200);
+assert.deepEqual(await probeStatus.json(), manualTestEnabled
+  ? { enabled: true, recipient: "contact@edsautoshop.com", retryAfterSeconds: 0 }
+  : { enabled: false });
+// Never POST the email-test endpoint here: packaging checks must not dial Brevo.
 assert.equal((await fetch(`${origin}/api/mechanic/logout`, { method: "POST", headers: privateHeaders })).status, 403);
 assert.equal((await fetch(`${origin}/api/mechanic/logout`, { method: "POST", headers: { ...privateHeaders, "x-mechanic-csrf": session.csrfToken } })).status, 200);
 assert.equal((await fetch(`${origin}/api/mechanic/appointments`, { headers: privateHeaders })).status, 401);
@@ -74,6 +83,6 @@ const booking = await fetch(`${origin}/api/appointments`, {
 assert.equal(booking.status, 201);
 const saved = await booking.json();
 assert.equal(saved.status, "pending", "Untouched seed automation must remain disabled");
-assert.equal(saved.emailNotification, "disabled", "Staging must force mail off despite supplied synthetic SMTP settings");
+assert.equal(saved.emailNotification, "disabled", "Staging must keep appointment email off despite supplied synthetic mail settings");
 assert.equal(saved.managementAccess, false);
-console.log("Packaged protected staging: gateway, assets, sessions, CSRF, booking and forced-mail-off checks passed.");
+console.log("Packaged protected staging: gateway, assets, sessions, CSRF, booking, manual-test configuration and disabled appointment-mail checks passed. No diagnostic send performed.");

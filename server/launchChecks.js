@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { businessProfile, businessProfileLaunchIssues } from "../shared/businessProfile.js";
 import { isValidEmailAddress } from "../shared/appointmentFields.js";
 import { readRuntimeConfig } from "./runtimeConfig.js";
+import { isValidBrevoApiKey, readEmailConfiguration } from "./emailTransport.js";
 
 const placeholder = value => /replace[_ -]?with|change[_ -]?me|your[_ -]?(?:own|password|secret|key)|db_user|cluster\.mongodb\.net/i.test(value);
 const hasControls = value => [...value].some(character => {
@@ -106,17 +107,27 @@ export function checkLaunchConfiguration({ env = process.env, profile = business
   const add = (code, ok, message) => checks.push({ code, ok: Boolean(ok), message });
   add("NODE_ENV", settings.NODE_ENV === "production", "NODE_ENV must be production for a public launch.");
   add("DEPLOYMENT_STAGE", settings.DEPLOYMENT_STAGE === undefined || settings.DEPLOYMENT_STAGE === "production", "A protected staging or development deployment cannot pass the public-launch configuration check.");
+  add("STAGING_EMAIL_TEST_ENABLED", settings.STAGING_EMAIL_TEST_ENABLED === undefined || settings.STAGING_EMAIL_TEST_ENABLED === "false", "Leave STAGING_EMAIL_TEST_ENABLED unset or false outside the controlled protected-staging test.");
   try { readRuntimeConfig(settings); add("SERVER_RUNTIME", true, "Runtime bind, port, frontend-serving, shutdown and proxy settings have valid syntax."); }
   catch { add("SERVER_RUNTIME", false, "Review HOST, PORT, SERVE_FRONTEND, SHUTDOWN_GRACE_MS and TRUST_PROXY using the documented runtime formats."); }
   add("PUBLIC_WEBSITE_ORIGIN", productionOrigin(settings.PUBLIC_WEBSITE_ORIGIN), "PUBLIC_WEBSITE_ORIGIN must be the real public HTTPS origin, without credentials, a path, query, fragment, loopback/private address or example hostname.");
   add("MONGODB_URI", databaseUri(settings.MONGODB_URI), "MONGODB_URI must be a non-placeholder MongoDB connection string with an explicit shop database; authentication and backup readiness remain unverified.");
   add("MECHANIC_ADMIN_PASSWORD", supplied(settings.MECHANIC_ADMIN_PASSWORD) && settings.MECHANIC_ADMIN_PASSWORD.length >= 12 && settings.MECHANIC_ADMIN_PASSWORD.length <= 256, "Set a unique random MECHANIC_ADMIN_PASSWORD of 12–256 characters; placeholders are not accepted.");
   add("APPOINTMENT_MANAGEMENT_SECRET", managementSecret(settings.APPOINTMENT_MANAGEMENT_SECRET), "Set APPOINTMENT_MANAGEMENT_SECRET to 32–128 cryptographically random bytes encoded as base64/base64url; only format and length are checked.");
-  add("SMTP_HOST", supplied(settings.SMTP_HOST) && /^[A-Za-z\d_-]+(?:\.[A-Za-z\d_-]+)*$/.test(settings.SMTP_HOST) && !nonpublicAddress(settings.SMTP_HOST.toLowerCase()), "SMTP_HOST must identify the intended production mail provider rather than a URL, local address or example hostname.");
-  const port = typeof settings.SMTP_PORT === "string" && /^\d+$/.test(settings.SMTP_PORT) ? Number(settings.SMTP_PORT) : NaN;
-  add("SMTP_PORT", Number.isInteger(port) && port >= 1 && port <= 65535, "SMTP_PORT must be an integer from 1 to 65535; verify the provider's TLS/STARTTLS requirement.");
-  add("SMTP_USER", supplied(settings.SMTP_USER), "Configure the production SMTP_USER privately.");
-  add("SMTP_PASS", supplied(settings.SMTP_PASS), "Configure the production SMTP_PASS privately.");
+  const emailTransport = settings.EMAIL_TRANSPORT === undefined ? "smtp" : settings.EMAIL_TRANSPORT;
+  add("EMAIL_TRANSPORT", ["smtp", "brevo_api"].includes(emailTransport), "EMAIL_TRANSPORT must be smtp (the default) or brevo_api; transport availability and delivery remain unverified.");
+  if (emailTransport === "brevo_api") {
+    add("BREVO_API_KEY", supplied(settings.BREVO_API_KEY) && isValidBrevoApiKey(settings.BREVO_API_KEY), "Configure a non-placeholder BREVO_API_KEY privately; a key's format does not verify account permissions or delivery.");
+    let configured = false;
+    try { configured = Boolean(readEmailConfiguration(settings)); } catch { /* Report only fixed advice. */ }
+    add("EMAIL_CONFIGURATION", configured, "Review the selected HTTPS transport's private key, single sender address and staff inbox formats.");
+  } else if (emailTransport === "smtp") {
+    add("SMTP_HOST", supplied(settings.SMTP_HOST) && /^[A-Za-z\d_-]+(?:\.[A-Za-z\d_-]+)*$/.test(settings.SMTP_HOST) && !nonpublicAddress(settings.SMTP_HOST.toLowerCase()), "SMTP_HOST must identify the intended production mail provider rather than a URL, local address or example hostname.");
+    const port = typeof settings.SMTP_PORT === "string" && /^\d+$/.test(settings.SMTP_PORT) ? Number(settings.SMTP_PORT) : NaN;
+    add("SMTP_PORT", Number.isInteger(port) && port >= 1 && port <= 65535, "SMTP_PORT must be an integer from 1 to 65535; verify the provider's TLS/STARTTLS requirement.");
+    add("SMTP_USER", supplied(settings.SMTP_USER), "Configure the production SMTP_USER privately.");
+    add("SMTP_PASS", supplied(settings.SMTP_PASS), "Configure the production SMTP_PASS privately.");
+  }
   add("MAIL_FROM", senderAddress(settings.MAIL_FROM), "MAIL_FROM must contain one real sender address, optionally preceded by an unquoted display name; sender authorization and delivery remain unverified.");
   add("MECHANIC_NOTIFICATION_EMAIL", supplied(settings.MECHANIC_NOTIFICATION_EMAIL) && isValidEmailAddress(settings.MECHANIC_NOTIFICATION_EMAIL) && !reservedHost(settings.MECHANIC_NOTIFICATION_EMAIL.trim().split("@")[1].toLowerCase()), "MECHANIC_NOTIFICATION_EMAIL must be one real staff notification address.");
   const profileIssues = businessProfileLaunchIssues(profile);

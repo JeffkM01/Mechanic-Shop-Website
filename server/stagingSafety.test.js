@@ -7,6 +7,7 @@ import { createApp } from "./app.js";
 import { createCustomerManagement } from "./customerManagement.js";
 import { createEmailNotifications } from "./emailNotifications.js";
 import { notificationEnvironmentForStage, readStagingSafety } from "./stagingSafety.js";
+import { createEmailConnectionTest } from "./emailConnectionTest.js";
 
 const PASSWORD = "Synthetic-stage-access-7381-unique-5962";
 const ENV = { DEPLOYMENT_STAGE: "staging", STAGING_ACCESS_PASSWORD: PASSWORD,
@@ -101,6 +102,31 @@ test("staging keeps notification processing and management-email grants disabled
   assert.equal(sends, 0);
   assert.equal(env.SMTP_PASS, "synthetic-private-password", "Input configuration is never mutated");
   assert.equal(notificationEnvironmentForStage({ enabled: false }, env), env);
+});
+
+test("an explicitly enabled manual API probe never enables appointment dispatch or management grants", async () => {
+  const env = { ...ENV, EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-private-api-key-for-manual-probe-tests",
+    STAGING_EMAIL_TEST_ENABLED: "true", NODE_ENV: "production", PUBLIC_WEBSITE_ORIGIN: "https://staging.example.invalid",
+    APPOINTMENT_MANAGEMENT_SECRET: Buffer.alloc(32, 17).toString("base64url"),
+    MAIL_FROM: "sender@example.invalid", MECHANIC_NOTIFICATION_EMAIL: "operator@example.invalid" };
+  let sends = 0;
+  const Appointment = { find() { throw new Error("A manual probe must never drain existing pending appointment messages"); } };
+  const staging = readStagingSafety(env);
+  const notificationEnv = notificationEnvironmentForStage(staging, env);
+  assert.deepEqual(notificationEnv, {});
+  const management = createCustomerManagement({ Appointment, env: notificationEnv });
+  const transport = { sendMail: async () => { sends++; } };
+  const notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv, transport });
+  assert.equal(management.enabled, false);
+  assert.equal(notifications.enabled, false);
+  notifications.start(); notifications.kick(); await notifications.processPending(); await notifications.stop();
+  const probe = createEmailConnectionTest({ staging, env, transport });
+  assert.equal(probe.status().enabled, true);
+  assert.equal(sends, 0, "configuration, status reads and disabled queue operations never send");
+  await probe.send();
+  assert.equal(sends, 1, "only an explicit manual probe sends its one injected synthetic message");
+  assert.equal(notifications.enabled, false);
+  assert.equal(management.enabled, false);
 });
 
 test("unlaunched pages, assets and all customer/staff API routes require staging access before parsing or side effects", async t => {

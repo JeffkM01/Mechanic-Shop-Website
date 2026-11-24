@@ -114,6 +114,73 @@ test("email service is disabled when credentials are absent", async () => {
   await service.processPending();
 });
 
+test("explicit API-only notifications use HTTPS and acknowledge the existing durable queue", async t => {
+  const records = [{ ...structuredClone(sample), notificationState: { requestCustomer: "pending", requestMechanic: "not-applicable" } }];
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 201, async json() { return { messageId: "<synthetic-api-queue-acknowledgement>" }; } };
+  });
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel(records), env: {
+    EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-api-key-not-a-live-credential",
+    MAIL_FROM: config.MAIL_FROM, MECHANIC_NOTIFICATION_EMAIL: config.MECHANIC_NOTIFICATION_EMAIL,
+  } });
+  assert.equal(service.enabled, true);
+  assert.equal(calls.length, 0, "constructing a dispatcher never sends mail");
+  await service.processPending();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.brevo.com/v3/smtp/email");
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(JSON.parse(calls[0].options.body).to[0].email, sample.email);
+  assert.equal(records[0].notificationState.requestCustomer, "sent");
+  await service.processPending();
+  assert.equal(calls.length, 1, "acknowledged notifications are not replayed");
+});
+
+test("API provider rejection retains retryable intent and does not fabricate permanent recipient failure", async t => {
+  const clock = retryClock();
+  const records = [{ ...structuredClone(sample), notificationState: { requestCustomer: "pending", requestMechanic: "not-applicable" } }];
+  let calls = 0;
+  const logs = [];
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return { ok: false, status: 400, body: { async cancel() {} }, json() { throw new Error("Private provider detail must not be read"); } };
+  });
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel(records), now: clock.now, logger: { error: value => logs.push(value) }, env: {
+    EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-api-key-not-a-live-credential",
+    MAIL_FROM: config.MAIL_FROM, MECHANIC_NOTIFICATION_EMAIL: config.MECHANIC_NOTIFICATION_EMAIL,
+  } });
+  await service.processPending();
+  assert.equal(calls, 1);
+  assert.equal(records[0].notificationState.requestCustomer, "pending");
+  assert.equal(records[0].notificationRetry.requestCustomer.failureCount, 1);
+  assert.equal(records[0].notificationRetry.requestCustomer.lastFailureCode, "transport-error");
+  assert.ok(+new Date(records[0].notificationRetry.requestCustomer.nextAttemptAt) > +clock.now());
+  assert.equal(JSON.stringify(logs).includes("Private provider detail"), false);
+  await service.processPending();
+  assert.equal(calls, 1, "the existing persisted backoff controls retries");
+});
+
+test("incomplete API configuration neither reads the queue nor sends despite leftover SMTP settings", async () => {
+  const service = await createEmailNotifications({ Appointment: { find() { assert.fail("No queue read allowed"); } },
+    env: { ...config, EMAIL_TRANSPORT: "brevo_api" }, transport: { sendMail() { assert.fail("No delivery allowed"); } } });
+  assert.equal(service.enabled, false);
+  await service.processPending();
+});
+
+test("API configuration preserves an injected transport without constructing a real HTTPS sender", async t => {
+  t.mock.method(globalThis, "fetch", () => { assert.fail("Only the injected transport may run"); });
+  const records = [{ ...structuredClone(sample), notificationState: { requestCustomer: "pending", requestMechanic: "not-applicable" } }];
+  const sent = [];
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel(records), env: {
+    EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-api-key-not-a-live-credential",
+    MAIL_FROM: config.MAIL_FROM, MECHANIC_NOTIFICATION_EMAIL: config.MECHANIC_NOTIFICATION_EMAIL,
+  }, transport: { async sendMail(value) { sent.push(value); } } });
+  await service.processPending();
+  assert.equal(sent.length, 1);
+  assert.equal(records[0].notificationState.requestCustomer, "sent");
+});
+
 test("mailer failure leaves pending status and a later sweep retries", async () => {
   const clock = retryClock();
   const records = [{ ...sample, notificationState: { ...sample.notificationState } }];

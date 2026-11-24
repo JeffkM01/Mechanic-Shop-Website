@@ -102,6 +102,27 @@ test("management remains disabled without explicit safe origin, random key and e
   assert.equal(createCustomerManagement({ Appointment: {}, env: settings({ NODE_ENV: "development", PUBLIC_WEBSITE_ORIGIN: "http://localhost:5173" }) }).enabled, true);
 });
 
+test("explicit API-only notification configuration enables management grants without SMTP settings", () => {
+  const env = settings({ EMAIL_TRANSPORT: "brevo_api", BREVO_API_KEY: "synthetic-api-key-not-a-live-credential" });
+  for (const key of ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]) delete env[key];
+  const manager = createCustomerManagement({ Appointment: {}, env, now: () => new Date(initialTime) });
+  assert.equal(manager.enabled, true);
+  const id = new mongoose.Types.ObjectId();
+  const management = manager.createGrant(id);
+  const link = new URL(manager.emailLink({ _id: id, management }));
+  assert.equal(link.origin, publicOrigin);
+  assert.equal(link.pathname, "/manage-appointment");
+  assert.match(link.hash, /token=/);
+  assert.equal(JSON.stringify(management).includes(new URLSearchParams(link.hash.slice(1)).get("token")), false);
+  for (const patch of [{ BREVO_API_KEY: "" }, { BREVO_API_KEY: "private\ninvalid" }, { MAIL_FROM: "one@example.invalid,two@example.invalid" },
+    { MECHANIC_NOTIFICATION_EMAIL: "one@example.invalid,two@example.invalid" }, { EMAIL_TRANSPORT: "unsupported" },
+    { PUBLIC_WEBSITE_ORIGIN: "" }, { APPOINTMENT_MANAGEMENT_SECRET: "" }]) {
+    assert.equal(createCustomerManagement({ Appointment: {}, env: { ...env, ...patch } }).enabled, false, Object.keys(patch)[0]);
+  }
+  delete env.EMAIL_TRANSPORT;
+  assert.equal(createCustomerManagement({ Appointment: {}, env }).enabled, false, "an API key alone does not select a transport");
+});
+
 test("new appointments persist random hashed grants privately and email only HTTPS fragment credentials", async t => {
   const f = await fixture(t);
   const first = await f.create();

@@ -1,11 +1,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readEmailConfiguration } from "./emailTransport.js";
 
 export const MANAGEMENT_LINK_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 export const MANAGEMENT_SESSION_LIFETIME_MS = 20 * 60 * 1000;
 const MAX_SESSIONS = 5;
 const LINK_CONTEXT = "eds-appointment-management-link-v1\0";
 const CSRF_CONTEXT = "eds-appointment-management-csrf-v1";
-const SMTP_KEYS = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM", "MECHANIC_NOTIFICATION_EMAIL"];
 const TOKEN_PATTERN = /^[A-Za-z\d_-]{43}$/;
 const ID_PATTERN = /^[a-f\d]{24}$/i;
 const HASH_PATTERN = /^[a-f\d]{64}$/;
@@ -52,9 +52,7 @@ function readConfiguration(env) {
     if (typeof raw !== "string" || !/^[A-Za-z\d+/_-]+={0,2}$/.test(raw)) return null;
     key = Buffer.from(raw, "base64url");
     if (key.length < 32 || key.length > 128 || key.toString("base64url") !== raw.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")) return null;
-    if (!SMTP_KEYS.every(name => typeof env[name] === "string" && env[name].trim())) return null;
-    const port = Number(env.SMTP_PORT);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    if (!readEmailConfiguration(env)) return null;
   } catch {
     return null;
   }

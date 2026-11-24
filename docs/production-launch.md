@@ -34,7 +34,7 @@ Use a hosting plan that permits the intended commercial use. Review current prov
 
 ## Single-host setup on a Node/container provider
 
-Render and Railway are possible examples, not selected or purchased services. Choose an always-running paid Node/container service with one replica, no scale-to-zero, enough termination grace, and verified outbound SMTP support. Confirm current commercial-use terms, region, price, resource limits, backup options, and data-processing terms before purchase.
+Render and Railway are possible examples, not selected or purchased services by this runbook. Choose an always-running Node/container service with one replica, no scale-to-zero, enough termination grace, and verified connectivity for the selected email transport. Confirm current commercial-use terms, region, price, resource limits, backup options, and data-processing terms before purchase.
 
 An operator can prepare either provider as follows without enabling deployment yet:
 
@@ -55,7 +55,7 @@ npm run build
 
 Use `npm start` as the runtime command with the production environment below and `SERVE_FRONTEND=true`. The explicit frontend `--include=dev` installs Vite even when the provider sets `NODE_ENV=production` during its build. Keep all private runtime values out of the frontend build environment and browser bundle.
 
-Do not put deployment tokens, MongoDB credentials, SMTP credentials, or the management key into `vercel.json`, the Dockerfile, GitHub Actions, the public business profile, or browser-exposed `VITE_` variables.
+Do not put deployment tokens, MongoDB credentials, SMTP credentials, Brevo API keys, or the management key into `vercel.json`, the Dockerfile, GitHub Actions, the public business profile, or browser-exposed `VITE_` variables.
 
 ## Process and data constraints
 
@@ -69,7 +69,7 @@ Do not put deployment tokens, MongoDB credentials, SMTP credentials, or the mana
 
 Supply server-only secrets through the host's private environment/secret store.
 
-The optional protected preview is documented in [Render staging](render-staging.md). `DEPLOYMENT_STAGE=staging` adds a site-wide gateway, requires an explicit isolated staging database, and forcibly disables outgoing email and management-link issuance. It never approves public launch. Do not remove its safeguards to test email; that requires a separately reviewed controlled-mail setup. Normal deployments keep their existing behavior when this opt-in stage is unset.
+The optional protected preview is documented in [Render staging](render-staging.md). `DEPLOYMENT_STAGE=staging` adds a site-wide gateway, requires an explicit isolated staging database, and forcibly disables ordinary appointment notifications and management-link issuance. The separately enabled [controlled Brevo connection test](controlled-email-test.md) can send only a fixed synthetic message to the reviewed owner inbox; it never starts or replays the appointment queue. Do not remove staging safeguards to test email. Neither mode approves public launch. Normal deployments keep their existing behavior when this opt-in stage is unset.
 
 | Setting | Production requirement |
 | --- | --- |
@@ -81,7 +81,11 @@ The optional protected preview is documented in [Render staging](render-staging.
 | `MECHANIC_ADMIN_PASSWORD` | Unique strong staff password stored privately; runtime rejects the example placeholder and passwords below its minimum. |
 | `PUBLIC_WEBSITE_ORIGIN` | Exact public HTTPS origin, with no credentials, path, query, or fragment. No production loopback/default URL is generated. |
 | `APPOINTMENT_MANAGEMENT_SECRET` | At least 32 cryptographically random bytes encoded as base64/base64url, generated once and stored privately. |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, `MECHANIC_NOTIFICATION_EMAIL` | Reviewed SMTP configuration, sender/reply mailbox, and Edward's notification inbox. Configuration presence alone does not prove delivery. |
+| `EMAIL_TRANSPORT` | Unset or `smtp` preserves the existing SMTP transport. Explicit `brevo_api` selects the fixed Brevo HTTPS transactional API. Unknown selections are rejected. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Required for SMTP mode only; review provider host, port, TLS and private credentials. |
+| `BREVO_API_KEY` | Private transactional API key for `brevo_api` mode. Also used only by the separately enabled staging connection probe. Never expose it in frontend variables. |
+| `MAIL_FROM`, `MECHANIC_NOTIFICATION_EMAIL` | Reviewed sender/reply mailbox and Edward's notification inbox for either production transport. Configuration presence alone does not prove delivery. |
+| `STAGING_EMAIL_TEST_ENABLED` | Keep unset or `false` outside the reviewed controlled staging test. `true` is rejected outside protected staging and does not enable ordinary appointment notifications. |
 | `SHUTDOWN_GRACE_MS` | Default `10000`; supported `1000`–`30000`. Give the host a stop timeout longer than this deadline. |
 | `TRUST_PROXY` | Defaults to `false`. If the reviewed topology needs forwarded client IPs, use only the actual trusted proxy IP/CIDR allowlist; blanket trust and hop counts are rejected. |
 
@@ -91,7 +95,7 @@ Staff login limits each client IP to five failed or in-flight password checks in
 
 Configure and test abuse controls at the selected public ingress, including rate limiting for `POST /api/appointments`. Staff login has application throttling. Public booking has an opt-in process-local quota via `BOOKING_RATE_LIMIT_ENABLED=true`, enabled in the staging template: five submitted attempts per observed IP in a fixed 15-minute window by default, before JSON parsing. Invalid submissions count; HTTP 429 includes `Retry-After`. `BOOKING_RATE_LIMIT_MAX` and `BOOKING_RATE_LIMIT_WINDOW_MINUTES` allow explicit tuning. The bounded counters reset on restart and require verified proxy/client-IP handling; this is not a distributed or edge abuse system. Choose limits for actual shop traffic and verify that legitimate submissions receive clear retry behavior. Do not assume the host enables ingress controls automatically.
 
-Missing or invalid management-link/SMTP settings must retain honest fallback behavior, never fabricate a working link or claim email was delivered. Production launch checks can remain blocked while local development and synthetic tests work normally.
+Missing or invalid management-link/mail-transport settings must retain honest fallback behavior, never fabricate a working link or claim email was delivered. API-only configuration is checked without SMTP requirements; default SMTP configuration retains its existing requirements. Production launch checks can remain blocked while local development and synthetic tests work normally.
 
 ## Portable Docker image
 
@@ -103,7 +107,7 @@ docker build -t eds-auto-shop:review .
 
 The multistage build uses lockfiles, retains only backend production dependencies in the runtime image, excludes `.env` files, runs as the non-root `node` user, and exposes port `3001`. It includes the built frontend for optional same-origin serving. Supply run configuration separately; do not bake credentials into an image.
 
-The image also includes the offline launch-check entrypoint. An operator can validate the intended configuration without starting the API or contacting MongoDB/SMTP:
+The image also includes the offline launch-check entrypoint. An operator can validate the intended configuration without starting the API or contacting MongoDB or an email provider:
 
 ```sh
 docker run --rm --env-file /path/to/private-production-environment \
@@ -136,7 +140,7 @@ Internal `HOST=0.0.0.0` lets container ingress reach Node. The external loopback
 
 `GET /api/health/live` is process liveness. Configure the chosen host's readiness checks, restart policy, external uptime notification, and application error alerting explicitly. Adding endpoints does not provision monitoring or prove that an alert reaches Edward.
 
-Review pending-notification age, saved retry deadlines, and terminal `failed` flags through protected operator tooling. Database readiness does not verify SMTP or report a message as delivered. Retry metadata contains only fixed failure categories and bounded history, but it is private operational data and must remain outside public API responses and log uploads. See the [notification recovery procedure](customer-appointment-management.md#notification-semantics) before requeueing a failed message; there is no automatic replay or retry dashboard.
+Review pending-notification age, saved retry deadlines, and terminal `failed` flags through protected operator tooling. Database readiness does not verify email transport or report a message as delivered. Retry metadata contains only fixed failure categories and bounded history, but it is private operational data and must remain outside public API responses and log uploads. See the [notification recovery procedure](customer-appointment-management.md#notification-semantics) before requeueing a failed message; there is no automatic replay or retry dashboard.
 
 SIGTERM/SIGINT immediately stops new API-handler admission and future queue sweeps. Shutdown waits for admitted asynchronous API operations, HTTP closure, and the current email send/acknowledgement before closing MongoDB. An admitted operation stays tracked even if its client disconnects or the response has already ended; a closed socket does not prove a booking or cancellation has finished. Give the platform enough termination grace. If the configured deadline expires, the process force-closes sockets and exits unsuccessfully; treat interrupted work and uncertain mail acknowledgement as requiring reconciliation after restart. Staff sign in again after deployment; durable appointments and notification intents remain in MongoDB. Do not run former and replacement processes as concurrent dispatchers during a rolling update.
 
@@ -145,6 +149,8 @@ Use fixed failure categories and safe identifiers where necessary in logs. Do no
 ## Controlled verification before launch
 
 Use staging or a separately approved controlled production smoke test with synthetic customer details and mailboxes owned by participants. Sending test email or changing actual settings requires operator approval; neither CI nor this runbook executes it automatically.
+
+Start with the [controlled Brevo connection test](controlled-email-test.md) for the fixed owner inbox. Protected staging still blocks the normal appointment queue and management grants after a successful probe. The appointment-email and management-link checks below require a separately reviewed environment with owned-recipient protection and reconciled notification intents; this runbook does not instruct removing the staging gateway to send them.
 
 1. Finish Edward's public-profile, service, policy, scheduling, and capacity review. Keep automation off unless he separately verifies actual hours/capacity and explicitly enables eligible Wiper Blade Replacement automation.
 2. Run lint, production build, frontend/API tests, and the complete browser suite. Never point fixtures at production data.

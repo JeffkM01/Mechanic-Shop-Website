@@ -15,6 +15,7 @@ import { createOperationTracker } from "./operationTracker.js";
 import { notificationEnvironmentForStage, readStagingSafety } from "./stagingSafety.js";
 import { createBookingRateLimiter, readBookingAbuseConfig } from "./bookingAbuseProtection.js";
 import { startupFailureMessage } from "./startupDiagnostics.js";
+import { createEmailConnectionTest } from "./emailConnectionTest.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -32,6 +33,8 @@ try {
   const uri = process.env.MONGODB_URI;
   startupPhase = "MECHANIC_AUTH_CONFIGURATION";
   const auth = createMechanicAuth(process.env.MECHANIC_ADMIN_PASSWORD, { secureCookies: config.production });
+  startupPhase = "EMAIL_TEST_CONFIGURATION";
+  const emailTest = createEmailConnectionTest({ staging });
   startupPhase = "DATABASE_URI_CONFIGURATION";
   if (typeof uri !== "string" || !/^mongodb(?:\+srv)?:\/\//.test(uri) || uri.includes("DB_USER") || uri.includes("CLUSTER.mongodb.net")) {
     throw new Error("MONGODB_URI must be configured.");
@@ -46,13 +49,14 @@ try {
   startupPhase = "SCHEDULING_SETTINGS";
   const scheduling = createSchedulingService({ Appointment, SchedulingState, management });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
-  // Staging never constructs an SMTP transport, even if real SMTP values were
-  // accidentally copied into its host environment. Queue state is retained.
+  // Ordinary staging notifications never construct a transport, even if real
+  // mail credentials were supplied. The independent optional probe never reads
+  // this queue or enables appointment-management links.
   startupPhase = "NOTIFICATIONS";
   notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv });
   startupPhase = "HTTP_APPLICATION";
   const operationTracker = createOperationTracker();
-  const app = createApp({ Appointment, scheduling, auth, notifications, management,
+  const app = createApp({ Appointment, scheduling, auth, notifications, management, emailTest,
     operationTracker,
     requestGate: staging.requestGate, bookingRateLimiter,
     trustProxy: config.trustProxy,
@@ -70,7 +74,7 @@ try {
   startupPhase = "NOTIFICATIONS";
   notifications.start();
   console.log(`Appointment service listening on ${config.host}:${config.port}.`);
-  console.log(`Frontend serving ${config.serveFrontend ? "enabled" : "disabled"}. Email notifications ${notifications.enabled ? "enabled" : "disabled (SMTP not configured)"}.`);
+  console.log(`Frontend serving ${config.serveFrontend ? "enabled" : "disabled"}. Appointment email notifications ${notifications.enabled ? "enabled" : "disabled (staging or mail not configured)"}.`);
 } catch (error) {
   // Never echo arbitrary MongoDB, SMTP, request or environment values.
   console.error(startupFailureMessage(startupPhase, error));

@@ -5,6 +5,7 @@ import BookingSettings from "../components/BookingSettings";
 import ClosuresAndBlocks from "../components/ClosuresAndBlocks";
 import DeclineAppointmentDialog from "../components/DeclineAppointmentDialog";
 import CancelAppointmentDialog from "../components/CancelAppointmentDialog";
+import EmailConnectionTest from "../components/EmailConnectionTest";
 import { getDeclineReason } from "../../shared/declineReasons.js";
 import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS } from "../../shared/cancellations.js";
 import useMechanicSession from "../hooks/useMechanicSession";
@@ -167,6 +168,7 @@ function MechanicWorkspace({ auth }) {
   return <>
     <nav className="staff-navigation" aria-label="Staff dashboard sections">{sections.map(name => <button type="button" key={name} aria-current={section === name ? "page" : undefined} onClick={() => setSection(name)}>{name}</button>)}</nav>
     {section === "Appointments" ? <Appointments request={auth.request} /> : <SchedulingWorkspace settings={settings} section={section} />}
+    <EmailConnectionTest request={auth.request} />
   </>;
 }
 
