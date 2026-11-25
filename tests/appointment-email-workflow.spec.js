@@ -295,6 +295,7 @@ for (const view of ["customer", "staff"]) {
         // Axe may leave its keyboard-focus probe on the skip link. Restore
         // resting focus before capturing the notice's visual layout.
         await page.evaluate(() => document.activeElement?.blur());
+        await expect(page.getByRole("link", { name: "Skip to content", exact: true })).not.toBeInViewport();
         const label = `${view}-appointment-email-test${zoom ? "-enlarged" : ""}`;
         const path = testInfo.outputPath(`${label}.png`);
         await notice(page).screenshot({ path });
