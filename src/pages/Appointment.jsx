@@ -6,6 +6,8 @@ import BookingCalendar from "../components/BookingCalendar";
 import useBookingAvailability from "../hooks/useBookingAvailability";
 import useServiceCatalog from "../hooks/useServiceCatalog";
 import ServiceCatalogStatus from "../components/ServiceCatalogStatus";
+import AppointmentEmailTestNotice from "../components/AppointmentEmailTestNotice";
+import useAppointmentEmailTest from "../hooks/useAppointmentEmailTest";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
 import { fieldLimits, validateAppointmentFields } from "../utils/appointmentValidation";
 import "../styles/Appointment.css";
@@ -25,20 +27,21 @@ function readableAvailabilityError(message) {
     : message;
 }
 
-function CustomerField({ name, value, error, onChange, onBlur, inputRef }) {
+function CustomerField({ name, value, error, onChange, onBlur, inputRef, readOnly = false }) {
   const properties = {
     id: `booking-${name}`, name, value, onChange, onBlur, ref: inputRef,
-    maxLength: fieldLimits[name], required: name !== "notes",
+    maxLength: fieldLimits[name], required: name !== "notes", readOnly,
     "aria-invalid": Boolean(error) || undefined,
-    "aria-describedby": [name === "phone" && "booking-phone-help", error && `booking-${name}-error`].filter(Boolean).join(" ") || undefined,
+    "aria-describedby": [name === "phone" && "booking-phone-help", readOnly && "booking-email-test-help", error && `booking-${name}-error`].filter(Boolean).join(" ") || undefined,
   };
   return <div className={`booking-field${name === "notes" ? " booking-wide" : ""}`}>
     <label htmlFor={`booking-${name}`}>{fieldLabels[name]}{name === "notes" ? " (optional)" : ""}</label>
     {name === "notes" ? <textarea {...properties} rows={3} placeholder="Tell us what you’ve noticed or anything else we should know." />
       : <input {...properties} type={name === "email" ? "email" : name === "phone" ? "tel" : "text"}
-        autoComplete={{ name: "name", email: "email", phone: "tel" }[name]}
+        autoComplete={readOnly ? "off" : { name: "name", email: "email", phone: "tel" }[name]}
         placeholder={name === "phone" ? "(636) 555-1234" : name === "vehicle" ? "Year, make, and model" : undefined} />}
     {name === "phone" && <p className="booking-field-help" id="booking-phone-help">U.S. number, such as (636) 555-1234. An optional +1 country prefix is accepted.</p>}
+    {readOnly && <p className="booking-field-help" id="booking-email-test-help">This private test uses the verified test inbox shown above.</p>}
     <FieldError name={name} message={error} />
   </div>;
 }
@@ -86,7 +89,7 @@ function BookingIntro() {
   return <header className="booking-intro"><div className="site-container booking-intro-inner"><div><p className="eyebrow">A LITTLE CARE FOR WHAT’S AHEAD</p><h1>Let’s make time<br />for your car.</h1></div><div><p>Choose a service, find an available time, and tell us about your vehicle. A clear next step starts here.</p><span><Icon name="shield" />Secure requests. Personal service.</span></div></div></header>;
 }
 
-function BookingExperience({ initialService, details, setDetails, catalog }) {
+function BookingExperience({ initialService, details, setDetails, catalog, emailTest }) {
   const [selection, setSelection] = useState({ service: initialService, date: "", time: "" });
   const [preview, setPreview] = useState(null);
   const [saved, setSaved] = useState(null);
@@ -185,6 +188,7 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
   }
   function changeDetails(event) {
     const { name, value } = event.target;
+    if (name === "email" && emailTest) return;
     version.current++;
     setDetails(current => ({ ...current, [name]: value }));
     revalidate({ ...details, [name]: value, ...selection }, [name]);
@@ -223,6 +227,11 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
 
   async function send() {
     if (busy.current || !preview || uncertainRequest) return;
+    if (preview.email !== details.email) {
+      setPreview(null);
+      setError("The email test configuration changed. Review your details again before sending.");
+      return;
+    }
     if (!catalog.ready) { setError("Current services must be verified before sending a request. Retry services; your details are still here."); return; }
     const errors = validate();
     if (Object.keys(errors).length) { setPreview(null); showValidation(errors); return; }
@@ -279,6 +288,7 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
     <BookingIntro />
     <div className="site-container booking-container">
       {!saved && <ServiceCatalogStatus catalog={catalog} />}
+      <AppointmentEmailTestNotice configuration={emailTest} />
       {!saved && catalog.ready && selection.service && !service && <p className="booking-error" role="alert">The selected service is no longer available for new appointments. Choose another service; your contact and vehicle details are still here.</p>}
       {!saved && <ol className="booking-steps" aria-label="Booking steps">{stepLabels.map((label, index) => <li key={label} aria-current={currentStep === index + 1 ? "step" : undefined} className={currentStep > index + 1 ? "is-complete" : ""}><span>{currentStep > index + 1 ? <Icon name="check" /> : `0${index + 1}`}</span>{label}</li>)}</ol>}
       {error && <p className="booking-error" role="alert" tabIndex={-1} ref={errorBox}>{error}</p>}
@@ -297,7 +307,7 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
       </section>}
       {saved ? <section className="booking-success" aria-labelledby="booking-success-heading">
         <span className="booking-success-icon"><Icon name={saved.status === "confirmed" ? "check" : "clock"} /></span>
-        <p className="eyebrow">{saved.status === "confirmed" ? "APPOINTMENT CONFIRMED" : "REQUEST RECEIVED"}</p>
+        <p className="eyebrow">{emailTest ? "PRIVATE EMAIL TEST · " : ""}{saved.status === "confirmed" ? "APPOINTMENT CONFIRMED" : "REQUEST RECEIVED"}</p>
         <h2 id="booking-success-heading" tabIndex={-1} ref={successHeading}>{saved.status === "confirmed" ? "You’re on the schedule." : "Your next step is in good hands."}</h2>
         <p className="booking-success-message" role="status">{saved.status === "pending" ? "Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet." : "Your appointment has been confirmed. The service duration is a booking estimate, not a guaranteed repair completion time."}</p>
         <div className="booking-reference"><span>YOUR REFERENCE ID</span><strong>{saved.id}</strong></div>
@@ -333,7 +343,7 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
             <div className="booking-panel-heading"><span className="booking-step-number">03</span><div><p className="booking-kicker">LET’S GET TO KNOW YOUR CAR</p><h2 ref={detailHeading} tabIndex={-1}>Your details. Your vehicle.</h2></div></div>
             {!slot && <p className="booking-details-hint">You can enter your details now. Select an available appointment date and time before reviewing your request. Your information stays here if you need to choose a different time.</p>}
             <div className="booking-details-grid">
-              {Object.keys(emptyDetails).map(name => <CustomerField key={name} name={name} value={details[name]} error={fieldErrors[name]} onChange={changeDetails} onBlur={() => validateField(name)} inputRef={node => { fieldElements.current[name] = node; }} />)}
+              {Object.keys(emptyDetails).map(name => <CustomerField key={name} name={name} value={details[name]} error={fieldErrors[name]} onChange={changeDetails} onBlur={() => validateField(name)} inputRef={node => { fieldElements.current[name] = node; }} readOnly={name === "email" && Boolean(emailTest)} />)}
             </div>
             <div className="booking-review-action"><p>Review your details before anything is sent.</p><button className="button button-primary" type="submit" disabled={locked}>{checking ? "Rechecking your time…" : "Review Appointment Request"}<Icon name="arrow" /></button></div>
           </fieldset>
@@ -352,10 +362,12 @@ function BookingExperience({ initialService, details, setDetails, catalog }) {
 export default function Appointment() {
   const { search } = useLocation();
   const catalog = useServiceCatalog();
+  const emailTest = useAppointmentEmailTest();
   const initialService = getServiceSelection(search, catalog.services);
   const [details, setDetails] = useState({ ...emptyDetails });
   if (!catalog.loaded) return <main className="customer-page booking-page"><BookingIntro /><div className="site-container booking-container"><ServiceCatalogStatus catalog={catalog} /></div></main>;
   // Linked service changes reset scheduling/review, while keeping unsent contact
   // details in this parent. No contact information is written to browser storage.
-  return <BookingExperience key={search} initialService={initialService} details={details} setDetails={setDetails} catalog={catalog} />;
+  const currentDetails = emailTest ? { ...details, email: emailTest.recipient } : details;
+  return <BookingExperience key={search} initialService={initialService} details={currentDetails} setDetails={setDetails} catalog={catalog} emailTest={emailTest} />;
 }

@@ -6,17 +6,19 @@ import ClosuresAndBlocks from "../components/ClosuresAndBlocks";
 import DeclineAppointmentDialog from "../components/DeclineAppointmentDialog";
 import CancelAppointmentDialog from "../components/CancelAppointmentDialog";
 import EmailConnectionTest from "../components/EmailConnectionTest";
+import AppointmentEmailTestNotice from "../components/AppointmentEmailTestNotice";
 import { getDeclineReason } from "../../shared/declineReasons.js";
 import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS } from "../../shared/cancellations.js";
 import useMechanicSession from "../hooks/useMechanicSession";
 import useSchedulingSettings from "../hooks/useSchedulingSettings";
+import useAppointmentEmailTest from "../hooks/useAppointmentEmailTest";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
 import { isValidEmailAddress, isValidUsPhone } from "../../shared/appointmentFields.js";
 import "../styles/MechanicDashboard.css";
 
 const sections = ["Appointments", "Business Hours", "Closures & Blocked Times", "Booking Settings"];
 
-function Appointments({ request }) {
+function Appointments({ request, emailTest }) {
   const [filter, setFilter] = useState("pending");
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -57,7 +59,9 @@ function Appointments({ request }) {
     try {
       const result = await request(`/appointments/${id}/cancel`, { method: "POST", body: reason });
       if (result.status !== "cancelled") throw new Error("Cancellation status could not be verified.");
-      const delivery = result.emailNotification === "queued" ? "A customer email has been queued for delivery." : result.emailNotification === "sent" ? "The cancellation email has already been sent." : result.emailNotification === "failed" ? "The cancellation email could not be delivered. Contact the customer directly." : "No customer email is queued. Contact the customer directly.";
+      const delivery = emailTest
+        ? result.emailNotification === "queued" ? "A test email has been queued for delivery." : result.emailNotification === "sent" ? "The test cancellation email has already been accepted for delivery." : "No test email is queued for this request."
+        : result.emailNotification === "queued" ? "A customer email has been queued for delivery." : result.emailNotification === "sent" ? "The cancellation email has already been sent." : result.emailNotification === "failed" ? "The cancellation email could not be delivered. Contact the customer directly." : "No customer email is queued. Contact the customer directly.";
       setNotice(`Appointment cancelled. ${delivery}`);
       setCancelling(null); setLoading(true); setRefreshCount(value => value + 1);
       return true;
@@ -76,7 +80,9 @@ function Appointments({ request }) {
     setBusyId(id); setError(""); setNotice(""); setDeclineFields({});
     try {
       const result = await request(`/appointments/${id}`, { method: "PATCH", body: { status, ...(decline ? { decline } : {}) } });
-      setNotice(`Appointment ${status}. ${result.emailNotification === "queued" ? "A customer email has been queued for delivery." : "Email notifications are not configured yet."}`);
+      setNotice(`Appointment ${status}. ${emailTest
+        ? result.emailNotification === "queued" ? "A test email has been queued for delivery." : "No test email is queued for this request."
+        : result.emailNotification === "queued" ? "A customer email has been queued for delivery." : "Email notifications are not configured yet."}`);
       setDeclining(null);
       setLoading(true); setRefreshCount(value => value + 1);
       return true;
@@ -113,6 +119,7 @@ function Appointments({ request }) {
           <div className="mechanic-card-top"><div><p className="staff-kicker">{item.service}</p><h3>{item.name}</h3></div><span className={`mechanic-status mechanic-status-${item.status}`}>{item.status}</span></div>
           <div className="staff-appointment-time"><Icon name="calendar" /><span>{formatBookingDate(item.date) || "Date needs review"} at {formatBookingTime(item.time) || "Time needs review"}<small>{timezone}</small></span></div>
           <dl><dt>Service</dt><dd>{item.service}</dd><dt>Vehicle</dt><dd>{item.vehicle}</dd><dt>Email</dt><dd>{isValidEmailAddress(item.email) ? <a href={`mailto:${encodeURIComponent(item.email.trim())}`}>{item.email}</a> : <>{item.email}<span className="staff-field-help">Verify this address before contacting the customer.</span></>}</dd><dt>Phone</dt><dd>{dialNumber ? <a href={`tel:${dialNumber}`}>{item.phone}</a> : <>{item.phone}<span className="staff-field-help">Verify this number before calling.</span></>}</dd>{item.scheduling?.durationMinutes && <><dt>Estimate</dt><dd>{item.scheduling.durationMinutes} minutes · booked estimate</dd></>}{item.notes && <><dt>Notes</dt><dd>{item.notes}</dd></>}</dl>
+          {emailTest && item.emailTestEligible === false && <p className="staff-email-test-exclusion">This older request is excluded from the current email test. No test notification will be sent for it.</p>}
           {item.status === "pending" && item.scheduling?.holdExpiresAt && <p className="staff-hold">Provisional hold expires {formatShopTimestamp(item.scheduling.holdExpiresAt, timezone)} ({timezone}). Approval always rechecks availability.</p>}
           {item.status === "declined" && <section className="staff-decline-record" aria-label="Decline reason"><h4>Decline reason</h4>{item.decline?.explanation ? <><p><strong>{getDeclineReason(item.decline.category)?.label || "Recorded explanation"}</strong></p><p>{item.decline.explanation}</p>{item.decline.declinedAt && <p>Declined {formatShopTimestamp(item.decline.declinedAt, timezone)} ({timezone})</p>}</> : <p>No reason was recorded with this historical decision.</p>}</section>}
           {item.status === "cancelled" && <section className="staff-cancellation-record" aria-label="Cancellation details"><h4>Cancellation Details</h4><p>Cancelled by: {item.cancellation?.by === "customer" ? "Customer" : item.cancellation?.by === "mechanic" ? "Mechanic" : "Not recorded"}</p><p>Reason: {(item.cancellation?.by === "customer" ? CUSTOMER_CANCELLATION_REASONS : MECHANIC_CANCELLATION_REASONS).find(reason => reason.id === item.cancellation?.category)?.label || "Not recorded"}</p>{(item.cancellation?.message || item.cancellation?.explanation) && <p>{item.cancellation.message || item.cancellation.explanation}</p>}{item.cancellation?.cancelledAt && <p>Cancelled at: {formatShopTimestamp(item.cancellation.cancelledAt, item.cancellation.timezone || timezone)} ({item.cancellation.timezone || timezone})</p>}<p>Time slot: No longer reserved</p></section>}
@@ -165,10 +172,12 @@ function SchedulingWorkspace({ settings, section }) {
 function MechanicWorkspace({ auth }) {
   const [section, setSection] = useState("Appointments");
   const settings = useSchedulingSettings(auth.request, section !== "Appointments");
+  const emailTest = useAppointmentEmailTest(auth.request);
   return <>
     <nav className="staff-navigation" aria-label="Staff dashboard sections">{sections.map(name => <button type="button" key={name} aria-current={section === name ? "page" : undefined} onClick={() => setSection(name)}>{name}</button>)}</nav>
-    {section === "Appointments" ? <Appointments request={auth.request} /> : <SchedulingWorkspace settings={settings} section={section} />}
-    <EmailConnectionTest request={auth.request} />
+    <AppointmentEmailTestNotice configuration={emailTest} staff />
+    {section === "Appointments" ? <Appointments request={auth.request} emailTest={emailTest} /> : <SchedulingWorkspace settings={settings} section={section} />}
+    {!emailTest && <EmailConnectionTest request={auth.request} />}
   </>;
 }
 

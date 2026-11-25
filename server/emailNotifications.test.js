@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildEmail } from "./emailTemplates.js";
 import { createEmailNotifications } from "./emailNotifications.js";
 import { DECLINE_NEXT_STEPS } from "../shared/declineReasons.js";
+import { OWNED_EMAIL_TEST_FROM, OWNED_EMAIL_TEST_RECIPIENT } from "./appointmentEmailScope.js";
 
 const config = {
   SMTP_HOST: "smtp.example.test", SMTP_PORT: "587", SMTP_USER: "test-user",
@@ -18,6 +19,36 @@ const sample = {
 };
 
 const emailOptions = { from: config.MAIL_FROM, mechanicEmail: config.MECHANIC_NOTIFICATION_EMAIL };
+const scope = { runId: "c6311069-f235-4acf-9123-a98cb177aa60", recipient: OWNED_EMAIL_TEST_RECIPIENT };
+const otherRun = "16b06747-92e3-4dbb-a899-f8142087c251";
+const scopedConfig = { DEPLOYMENT_STAGE: "staging", EMAIL_TRANSPORT: "brevo_api",
+  BREVO_API_KEY: "synthetic-owned-inbox-key-never-used-for-live-mail", MAIL_FROM: OWNED_EMAIL_TEST_FROM,
+  MECHANIC_NOTIFICATION_EMAIL: OWNED_EMAIL_TEST_RECIPIENT };
+
+const getValue = (record, path) => path.split(".").reduce((value, key) => value?.[key], record);
+function hasPath(record, path) {
+  let current = record;
+  for (const key of path.split(".")) {
+    if (current === null || typeof current !== "object" || !Object.hasOwn(current, key)) return false;
+    current = current[key];
+  }
+  return true;
+}
+function matches(record, query) {
+  return Object.entries(query).every(([path, expected]) => {
+    if (path === "$or") return expected.some(branch => matches(record, branch));
+    const actual = getValue(record, path);
+    if (expected === null) return actual === null || actual === undefined;
+    if (expected && typeof expected === "object" && !(expected instanceof Date)) {
+      return Object.entries(expected).every(([operator, operand]) => {
+        if (operator === "$exists") return hasPath(record, path) === operand;
+        if (operator === "$lte") return actual !== undefined && actual !== null && +actual <= +operand;
+        throw new Error(`Unsupported synthetic predicate: ${operator}`);
+      });
+    }
+    return actual instanceof Date || expected instanceof Date ? +actual === +expected : actual === expected;
+  });
+}
 
 function retryClock() {
   let clock = Date.parse("2030-01-01T12:00:00Z");
@@ -42,14 +73,17 @@ function cancelledRecord(by = "customer", changes = {}) {
 
 function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect } = {}) {
   return {
-    find() {
+    find(query) {
       return {
+        maximum: Infinity,
         sort() { return this; },
-        limit() { return this; },
+        limit(maximum) { this.maximum = maximum; return this; },
         async lean() {
-          const batch = records.filter((item) => Object.values(item.notificationState || {}).includes("pending")).map(item => {
+          const batch = records.filter(item => matches(item, query)).slice(0, this.maximum).map(item => {
             const copy = structuredClone(item);
             delete copy.management;
+            delete copy.notificationRetry;
+            delete copy.notificationTestRunId;
             return copy;
           });
           afterBatch?.();
@@ -59,22 +93,27 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
     },
     findById(id) {
       let privateManagement = false;
+      let privateScope = false;
       return {
-        select(fields) { privateManagement = fields.split(" ").includes("+management"); onSelect?.(fields); return this; },
+        select(fields) {
+          privateManagement = fields.split(" ").includes("+management");
+          privateScope = fields.split(" ").includes("+notificationTestRunId");
+          onSelect?.(fields); return this;
+        },
         async lean() {
           beforeFreshRead?.(id);
           const record = records.find(item => item._id === id);
           if (!record) return null;
           const copy = structuredClone(record);
           if (!privateManagement) delete copy.management;
+          if (!privateScope) delete copy.notificationTestRunId;
           return copy;
         },
       };
     },
     async updateOne(query, change) {
       const record = records.find((item) => item._id === query._id);
-      const get = (field) => field.split(".").reduce((value, key) => value?.[key], record);
-      if (!record || !Object.entries(query).every(([field, value]) => get(field) === value)) return { modifiedCount: 0 };
+      if (!record || !matches(record, query)) return { modifiedCount: 0 };
       for (const [field, value] of Object.entries(change.$set)) {
         const parts = field.split(".");
         const key = parts.pop();
@@ -790,7 +829,7 @@ test("management links use private fresh metadata without persisting raw credent
   await service.processPending();
   assert.equal(record.notificationState.requestCustomer, "pending");
   assert.ok(attempts[0].text.includes(managementLink));
-  assert.ok(selections.every(fields => fields === "+management +notificationRetry"));
+  assert.ok(selections.every(fields => fields === "+management +notificationRetry +notificationTestRunId"));
   assert.ok(logs.length > 0);
   assert.ok(logs.every(message => !message.includes(bearer) && !message.includes("manage-appointment") && !message.includes("Customer:")));
   assert.equal(JSON.stringify(record).includes(bearer), false);
@@ -867,4 +906,104 @@ test("failed stale-message suppression never sends an obsolete pending receipt o
   assert.equal(record.notificationState.requestCustomer, "suppressed");
   assert.equal(record.notificationState.decisionCustomer, "suppressed");
   assert.equal(record.notificationState.cancellationCustomer, "sent");
+});
+
+test("full staging credentials cannot open a dispatcher without an explicit valid delivery scope", async () => {
+  const forbidden = { find() { assert.fail("Unscoped staging must never read the queue"); } };
+  const service = await createEmailNotifications({ Appointment: forbidden, env: scopedConfig,
+    transport: { sendMail() { assert.fail("Unscoped staging must never send"); } } });
+  assert.equal(service.enabled, false);
+  assert.equal(service.isEnabledFor(sample), false);
+  service.start(); service.kick(); await service.processPending(); await service.stop();
+  for (const deliveryScope of [{ ...scope, recipient: "other@example.invalid" }, { ...scope, runId: "not-a-run" }]) {
+    await assert.rejects(createEmailNotifications({ Appointment: forbidden, env: scopedConfig, deliveryScope }), /valid fixed-inbox/);
+  }
+  await assert.rejects(createEmailNotifications({ Appointment: forbidden, env: { ...scopedConfig, DEPLOYMENT_STAGE: "production" }, deliveryScope: scope }), /requires protected staging/);
+  await assert.rejects(createEmailNotifications({ Appointment: forbidden, env: { ...scopedConfig, MECHANIC_NOTIFICATION_EMAIL: "other@example.invalid" }, deliveryScope: scope }), /fixed owned inbox/);
+  await assert.rejects(createEmailNotifications({ Appointment: forbidden, env: { ...scopedConfig, MAIL_FROM: "Other <other@example.invalid>" }, deliveryScope: scope }), /fixed owned inbox/);
+});
+
+test("scoped dispatch chooses only the active run and verified inbox, with fixed test labels and no old management links", async () => {
+  const active = { ...structuredClone(sample), _id: "000000000000000000000004", email: scope.recipient,
+    notificationTestRunId: scope.runId, notificationState: { requestCustomer: "pending", requestMechanic: "pending", decisionCustomer: "not-applicable" } };
+  const records = [
+    { ...structuredClone(active), _id: "000000000000000000000001", notificationTestRunId: undefined },
+    { ...structuredClone(active), _id: "000000000000000000000002", notificationTestRunId: otherRun },
+    { ...structuredClone(active), _id: "000000000000000000000003", email: "unowned@example.invalid" },
+    active,
+  ];
+  delete records[0].notificationTestRunId;
+  const original = records.slice(0, 3).map(record => structuredClone(record));
+  const sent = [];
+  const linkReads = [];
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel(records), env: scopedConfig,
+    deliveryScope: scope, management: { emailLink(record) { linkReads.push(record._id); return null; } },
+    transport: { async sendMail(message) { sent.push(message); } } });
+  assert.equal(service.enabled, true);
+  assert.deepEqual(records.map(record => service.isEnabledFor(record)), [false, false, false, true]);
+  await service.processPending(); await service.processPending();
+  assert.equal(sent.length, 2);
+  assert.deepEqual(linkReads, [active._id]);
+  for (const message of sent) {
+    assert.equal(message.from, OWNED_EMAIL_TEST_FROM);
+    assert.equal(message.to, scope.recipient);
+    assert.equal(message.replyTo, scope.recipient);
+    assert.match(message.subject, /^\[TEST ONLY\]/);
+    assert.match(message.text, /^PRIVATE APPOINTMENT EMAIL TEST/);
+  }
+  assert.deepEqual(records.slice(0, 3), original);
+  assert.equal(active.notificationState.requestCustomer, "sent");
+  assert.equal(active.notificationState.requestMechanic, "sent");
+});
+
+test("ordinary dispatch never replays tagged test records, including null or invalid historical tags", async () => {
+  const normal = { ...structuredClone(sample), _id: "000000000000000000000001", notificationState: { requestCustomer: "pending", requestMechanic: "sent" } };
+  const tagged = [scope.runId, otherRun, null, ""].map((tag, index) => ({ ...structuredClone(normal),
+    _id: String(index + 2).padStart(24, "0"), notificationTestRunId: tag }));
+  const before = structuredClone(tagged);
+  const sent = [];
+  const selections = [];
+  const service = await createEmailNotifications({ Appointment: fakeAppointmentModel([normal, ...tagged], { onSelect: fields => selections.push(fields) }), env: config,
+    transport: { async sendMail(message) { sent.push(message); } } });
+  assert.equal(service.isEnabledFor(normal), true);
+  assert.ok(tagged.every(record => service.isEnabledFor(record) === false));
+  await service.processPending();
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0].subject, /TEST ONLY/);
+  assert.deepEqual(tagged, before);
+  assert.equal(selections.length, 5, "the batch query excludes tagged records before any private per-kind reads");
+});
+
+test("a stale batch rechecks the private run marker before suppression, management access or delivery", async () => {
+  const record = { ...cancelledRecord(), email: scope.recipient, notificationTestRunId: scope.runId,
+    notificationState: { requestCustomer: "pending", requestMechanic: "pending", decisionCustomer: "pending", cancellationCustomer: "pending", cancellationMechanic: "pending" } };
+  const originalFlags = structuredClone(record.notificationState);
+  const selections = [];
+  const model = fakeAppointmentModel([record], { afterBatch() { record.notificationTestRunId = otherRun; }, onSelect: fields => selections.push(fields) });
+  const service = await createEmailNotifications({ Appointment: model, env: scopedConfig, deliveryScope: scope,
+    management: { emailLink() { assert.fail("Out-of-scope grants must never be accessed"); } },
+    transport: { sendMail() { assert.fail("An old batch cannot authorize another run"); } } });
+  await service.processPending();
+  assert.ok(selections.every(fields => fields.includes("+notificationTestRunId")));
+  assert.deepEqual(record.notificationState, originalFlags);
+  assert.equal(record.notificationRetry, undefined);
+});
+
+test("scoped acknowledgement and failure writes cannot mark a record moved outside the run during transport", async () => {
+  for (const fail of [false, true]) {
+    const record = { ...structuredClone(sample), email: scope.recipient, notificationTestRunId: scope.runId,
+      notificationState: { requestCustomer: "pending", requestMechanic: "sent", decisionCustomer: "not-applicable" } };
+    const originalFlags = structuredClone(record.notificationState);
+    let sends = 0;
+    const service = await createEmailNotifications({ Appointment: fakeAppointmentModel([record]), env: scopedConfig, deliveryScope: scope,
+      logger: { error() {} }, transport: { async sendMail() {
+        sends++;
+        record.notificationTestRunId = otherRun;
+        if (fail) throw new Error("Synthetic failure after the request started");
+      } } });
+    await service.processPending(); await service.processPending();
+    assert.equal(sends, 1, "a send already admitted before the metadata change cannot be recalled");
+    assert.deepEqual(record.notificationState, originalFlags);
+    assert.equal(record.notificationRetry, undefined);
+  }
 });

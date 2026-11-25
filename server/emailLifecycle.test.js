@@ -32,7 +32,17 @@ function fixture({ sendMail, beforeRead, beforeAcknowledge } = {}) {
     async updateOne(query, change) {
       await beforeAcknowledge?.(query);
       const get = path => path.split(".").reduce((value, key) => value?.[key], record);
-      if (!Object.entries(query).every(([key, value]) => get(key) === value)) return { modifiedCount: 0 };
+      if (!Object.entries(query).every(([key, value]) => {
+        if (value && typeof value === "object" && Object.hasOwn(value, "$exists")) {
+          let current = record;
+          const exists = key.split(".").every(part => {
+            if (current === null || typeof current !== "object" || !Object.hasOwn(current, part)) return false;
+            current = current[part]; return true;
+          });
+          return exists === value.$exists;
+        }
+        return value === null ? get(key) === null || get(key) === undefined : get(key) === value;
+      })) return { modifiedCount: 0 };
       for (const [path, value] of Object.entries(change.$set)) {
         const parts = path.split(".");
         const key = parts.pop();
