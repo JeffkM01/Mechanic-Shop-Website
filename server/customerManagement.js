@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readEmailConfiguration } from "./emailTransport.js";
+import { APPOINTMENT_EMAIL_TEST_FIELD, appointmentEmailScopeQuery, appointmentMatchesEmailScope, validateEmailDeliveryScope } from "./appointmentEmailScope.js";
 
 export const MANAGEMENT_LINK_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 export const MANAGEMENT_SESSION_LIFETIME_MS = 20 * 60 * 1000;
@@ -59,6 +60,10 @@ function readConfiguration(env) {
   return { origin, key, keyId: sha256(key).slice(0, 32), secureCookie: new URL(origin).protocol === "https:" };
 }
 
+export function isCustomerManagementConfigured(env = process.env) {
+  return Boolean(readConfiguration(env));
+}
+
 // This bounded process-local abuse control supplements the durable Mongo-backed
 // credentials. Multiple production instances should also rate-limit at the edge.
 function createRateLimiter(now, { maximum, windowMs = 15 * 60 * 1000, maxEntries = 10_000 }) {
@@ -91,8 +96,9 @@ function rawCookie(req, name) {
   return matches[0].slice(name.length + 1);
 }
 
-export function createCustomerManagement({ Appointment, env = process.env, now = () => new Date() }) {
+export function createCustomerManagement({ Appointment, env = process.env, now = () => new Date(), deliveryScope = null }) {
   const configuration = readConfiguration(env);
+  const emailScope = validateEmailDeliveryScope(deliveryScope);
   const exchangeLimiter = createRateLimiter(now, { maximum: 10 });
   const failureLimiter = createRateLimiter(now, { maximum: 30 });
   const enabled = Boolean(configuration);
@@ -111,7 +117,7 @@ export function createCustomerManagement({ Appointment, env = process.env, now =
 
   function activeGrant(appointment, clock) {
     const grant = appointment?.management;
-    if (!configuration || !grant || grant.keyId !== configuration.keyId || grant.revokedAt
+    if (!appointmentMatchesEmailScope(appointment, emailScope) || !configuration || !grant || grant.keyId !== configuration.keyId || grant.revokedAt
       || !isToken(grant.nonce) || !HASH_PATTERN.test(grant.tokenHash || "")
       || !finiteDate(grant.issuedAt) || !finiteDate(grant.expiresAt)
       || +new Date(grant.issuedAt) > +clock || +new Date(grant.expiresAt) <= +clock
@@ -155,7 +161,7 @@ export function createCustomerManagement({ Appointment, env = process.env, now =
     requireEnabled();
     if (!validId(id) || !isToken(token)) throw unauthorized();
     const clock = clockNow();
-    const appointment = await Appointment.findById(id).select("+management").lean();
+    const appointment = await Appointment.findById(id).select(`+management +${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
     const active = activeGrant(appointment, clock);
     if (!active || !equalText(sha256(token), active.grant.tokenHash)) throw unauthorized();
     const raw = randomBytes(32).toString("base64url");
@@ -164,6 +170,7 @@ export function createCustomerManagement({ Appointment, env = process.env, now =
       expiresAt: new Date(Math.min(+clock + MANAGEMENT_SESSION_LIFETIME_MS, +new Date(active.grant.expiresAt))),
     };
     const updated = await Appointment.updateOne({
+      ...appointmentEmailScopeQuery(emailScope),
       _id: id, "management.tokenHash": active.grant.tokenHash,
       "management.keyId": configuration.keyId, "management.revokedAt": null,
       "management.expiresAt": { $gt: clock },
@@ -179,7 +186,7 @@ export function createCustomerManagement({ Appointment, env = process.env, now =
     const raw = rawCookie(req, cookieName(id));
     if (!isToken(raw)) return reject();
     const clock = clockNow();
-    const appointment = await Appointment.findById(id).select("+management").lean();
+    const appointment = await Appointment.findById(id).select(`+management +${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
     const active = activeGrant(appointment, clock);
     if (!active) return reject();
     const hash = sha256(raw);

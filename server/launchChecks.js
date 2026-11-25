@@ -108,6 +108,7 @@ export function checkLaunchConfiguration({ env = process.env, profile = business
   add("NODE_ENV", settings.NODE_ENV === "production", "NODE_ENV must be production for a public launch.");
   add("DEPLOYMENT_STAGE", settings.DEPLOYMENT_STAGE === undefined || settings.DEPLOYMENT_STAGE === "production", "A protected staging or development deployment cannot pass the public-launch configuration check.");
   add("STAGING_EMAIL_TEST_ENABLED", settings.STAGING_EMAIL_TEST_ENABLED === undefined || settings.STAGING_EMAIL_TEST_ENABLED === "false", "Leave STAGING_EMAIL_TEST_ENABLED unset or false outside the controlled protected-staging test.");
+  add("STAGING_APPOINTMENT_EMAIL_TEST_ENABLED", settings.STAGING_APPOINTMENT_EMAIL_TEST_ENABLED === undefined || settings.STAGING_APPOINTMENT_EMAIL_TEST_ENABLED === "false", "Leave STAGING_APPOINTMENT_EMAIL_TEST_ENABLED unset or false outside the controlled protected-staging appointment workflow test.");
   try { readRuntimeConfig(settings); add("SERVER_RUNTIME", true, "Runtime bind, port, frontend-serving, shutdown and proxy settings have valid syntax."); }
   catch { add("SERVER_RUNTIME", false, "Review HOST, PORT, SERVE_FRONTEND, SHUTDOWN_GRACE_MS and TRUST_PROXY using the documented runtime formats."); }
   add("PUBLIC_WEBSITE_ORIGIN", productionOrigin(settings.PUBLIC_WEBSITE_ORIGIN), "PUBLIC_WEBSITE_ORIGIN must be the real public HTTPS origin, without credentials, a path, query, fragment, loopback/private address or example hostname.");

@@ -5,13 +5,20 @@ import { createCustomerRoutes } from "./customerRoutes.js";
 import { serveBuiltFrontend } from "./staticFrontend.js";
 import { createOperationTracker } from "./operationTracker.js";
 import { EmailConnectionTestError } from "./emailConnectionTest.js";
+import { APPOINTMENT_EMAIL_TEST_FIELD, OWNED_EMAIL_TEST_RECIPIENT } from "./appointmentEmailScope.js";
 
-export function createApp({ Appointment, scheduling, auth, notifications, management = null, emailTest = null, databaseReady = () => Appointment.db.readyState === 1,
+export function createApp({ Appointment, scheduling, auth, notifications, management = null, emailTest = null, appointmentEmailTest = null, databaseReady = () => Appointment.db.readyState === 1,
   runtimeReady = () => true, frontendDirectory = null, trustProxy = false, logger = console,
   operationTracker = createOperationTracker(), requestGate = null, bookingRateLimiter = null }) {
   const app = express();
   const track = operationTracker.wrap;
   const ready = () => runtimeReady() && operationTracker.isAccepting();
+  const emailEnabledFor = appointment => notifications.enabled
+    && (typeof notifications.isEnabledFor !== "function" || notifications.isEnabledFor(appointment));
+  const workflowEnabled = appointmentEmailTest?.enabled === true && notifications.enabled && management?.enabled === true;
+  // Explicit projection keeps private notificationEnv, run identity and keys
+  // out of both public/staff status routes even if a caller passes more data.
+  const workflowStatus = () => workflowEnabled ? { enabled: true, recipient: OWNED_EMAIL_TEST_RECIPIENT } : { enabled: false };
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxy);
   if (requestGate) app.use(requestGate);
@@ -46,6 +53,8 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     catch (error) { next(error); }
   }));
 
+  app.get("/api/appointment-email-test", (_req, res) => res.json(workflowStatus()));
+
   app.get("/api/shop-hours", track(async (_req, res, next) => {
     res.set("Cache-Control", "no-store");
     try { res.json(await scheduling.getPublicShopHours()); }
@@ -78,8 +87,8 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
       res.status(201).json({
         id: appointment.id,
         status: appointment.status,
-        emailNotification: notifications.enabled ? "queued" : "disabled",
-        managementAccess: Boolean(management?.enabled && notifications.enabled),
+        emailNotification: emailEnabledFor(appointment) ? "queued" : "disabled",
+        managementAccess: Boolean(management?.enabled && emailEnabledFor(appointment)),
         holdExpiresAt: appointment.status === "pending" ? appointment.scheduling?.holdExpiresAt : undefined,
         message: appointment.status === "confirmed" ? "Your appointment has been confirmed." : "Request saved for mechanic review. The provisional hold expires if it is not reviewed in time; approval is still required.",
       });
@@ -97,6 +106,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
   app.get("/api/mechanic/session", auth.requireAuth, auth.session);
   app.post("/api/mechanic/activity", auth.requireAuth, auth.requireCsrf, auth.activity);
   app.post("/api/mechanic/logout", auth.requireAuth, auth.requireCsrf, auth.logout);
+  app.get("/api/mechanic/appointment-email-test", auth.requireAuth, (_req, res) => res.json(workflowStatus()));
 
   app.get("/api/mechanic/email-test", auth.requireAuth, (_req, res) => res.json(emailTest?.status() ?? { enabled: false }));
   app.post("/api/mechanic/email-test", auth.requireAuth, auth.requireCsrf, track(async (req, res, next) => {
@@ -117,16 +127,21 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     if (!["all", "pending", "confirmed", "declined", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
     try {
       const appointments = await Appointment.find(status === "all" ? {} : status === "pending" ? { status: { $in: ["pending", null] } } : { status })
-        .select("name email phone vehicle service date time notes status decline cancellation createdAt updatedAt scheduling")
+        .select(`name email phone vehicle service date time notes status decline cancellation createdAt updatedAt scheduling +${APPOINTMENT_EMAIL_TEST_FIELD}`)
         .sort({ createdAt: -1 }).limit(100).lean();
-      res.json({ appointments: appointments.map(appointment => ({ ...appointment, status: appointment.status || "pending", cancellationEligibility: scheduling.getCancellationEligibility?.(appointment) || { canCancel: false } })) });
+      res.json({ appointments: appointments.map(appointment => {
+        const payload = { ...appointment, status: appointment.status || "pending", cancellationEligibility: scheduling.getCancellationEligibility?.(appointment) || { canCancel: false } };
+        delete payload[APPOINTMENT_EMAIL_TEST_FIELD];
+        if (workflowEnabled) payload.emailTestEligible = Boolean(emailEnabledFor(appointment));
+        return payload;
+      }) });
     } catch (error) { next(error); }
   }));
 
   app.post("/api/mechanic/appointments/:id/cancel", auth.requireAuth, auth.requireCsrf, track(async (req, res, next) => {
     try {
       const appointment = await scheduling.cancelAppointment(req.params.id, "mechanic", req.body);
-      const emailNotification = !notifications.enabled ? "disabled" : appointment.notificationState?.cancellationCustomer === "sent" ? "sent" : appointment.notificationState?.cancellationCustomer === "pending" ? "queued" : appointment.notificationState?.cancellationCustomer === "failed" ? "failed" : "not-applicable";
+      const emailNotification = !emailEnabledFor(appointment) ? "disabled" : appointment.notificationState?.cancellationCustomer === "sent" ? "sent" : appointment.notificationState?.cancellationCustomer === "pending" ? "queued" : appointment.notificationState?.cancellationCustomer === "failed" ? "failed" : "not-applicable";
       res.json({ id: appointment.id, status: appointment.status, cancellation: appointment.cancellation, emailNotification });
       notifications.kick();
     } catch (error) { next(error); }
@@ -149,7 +164,7 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     }
     try {
       const appointment = await scheduling.reviewAppointment(req.params.id, req.body.status, { decline: req.body.decline });
-      res.json({ id: appointment.id, status: appointment.status, ...(appointment.decline ? { decline: appointment.decline } : {}), emailNotification: notifications.enabled ? "queued" : "disabled" });
+      res.json({ id: appointment.id, status: appointment.status, ...(appointment.decline ? { decline: appointment.decline } : {}), emailNotification: emailEnabledFor(appointment) ? "queued" : "disabled" });
       notifications.kick();
     } catch (error) { next(error); }
   }));

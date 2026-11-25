@@ -17,6 +17,14 @@ const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const PRIVATE_ERROR = "private SMTP password and appointment-management bearer";
 const get = (record, path) => path.split(".").reduce((value, key) => value?.[key], record);
+function exists(record, path) {
+  let current = record;
+  for (const key of path.split(".")) {
+    if (current === null || typeof current !== "object" || !Object.hasOwn(current, key)) return false;
+    current = current[key];
+  }
+  return true;
+}
 
 function set(record, path, value) {
   const keys = path.split(".");
@@ -33,7 +41,7 @@ function matches(record, query) {
     if (expected === null) return actual === undefined || actual === null;
     if (expected && typeof expected === "object" && !(expected instanceof Date)) {
       return Object.entries(expected).every(([operator, operand]) => {
-        if (operator === "$exists") return (actual !== undefined) === operand;
+        if (operator === "$exists") return exists(record, path) === operand;
         if (operator === "$lte") return actual !== undefined && actual !== null && +actual <= +operand;
         if (operator === "$lt") return actual !== undefined && actual !== null && +actual < +operand;
         if (operator === "$gte") return actual !== undefined && actual !== null && +actual >= +operand;

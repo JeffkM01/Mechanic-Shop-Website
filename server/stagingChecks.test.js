@@ -20,11 +20,19 @@ const fixture = () => ({
   MECHANIC_ADMIN_PASSWORD: "synthetic-staff-password-not-live-2030",
   APPOINTMENT_MANAGEMENT_SECRET: Buffer.alloc(32, 95).toString("base64url"),
 });
+const workflowFixture = () => ({
+  ...fixture(), STAGING_EMAIL_TEST_ENABLED: "false",
+  STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true",
+  STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: "36b1254a-1a4d-4c42-9c7d-7fc75f7915ce",
+  BREVO_API_KEY: "synthetic-private-brevo-workflow-preflight-key-2026",
+});
 
 test("valid synthetic staging passes offline configuration without business approval or email configuration", () => {
   const report = checkStagingConfiguration({ env: fixture() });
   assert.equal(report.configurationReady, true);
   assert.deepEqual(report.blockers, []);
+  assert.equal(report.emailConnectionTestEnabled, false);
+  assert.equal(report.appointmentEmailTestEnabled, false);
   for (const field of ["deploymentApproved", "readyForPublicLaunch", "networkAccessed", "databaseAccessed"]) assert.equal(report[field], false, field);
   assert.ok(report.unverified.some(item => item.includes("forcibly disabled")));
 });
@@ -60,13 +68,49 @@ test("staging preflight validates and honestly reports the optional manual email
 });
 
 test("offline staging preflight neither connects to MongoDB nor calls fetch or changes the environment", t => {
-  const env = fixture();
-  const original = structuredClone(env);
   t.mock.method(globalThis, "fetch", () => { throw new Error("Network forbidden"); });
   t.mock.method(mongoose, "connect", () => { throw new Error("Database connection forbidden"); });
   t.mock.method(mongoose.mongo.MongoClient.prototype, "connect", () => { throw new Error("Driver connection forbidden"); });
-  assert.equal(checkStagingConfiguration({ env }).configurationReady, true);
-  assert.deepEqual(env, original);
+  for (const env of [fixture(), workflowFixture()]) {
+    const original = structuredClone(env);
+    assert.equal(checkStagingConfiguration({ env }).configurationReady, true);
+    assert.deepEqual(env, original);
+  }
+});
+
+test("scoped appointment email preflight checks configuration only and reports its narrow scope without secrets", () => {
+  const env = workflowFixture();
+  const report = checkStagingConfiguration({ env });
+  assert.equal(report.configurationReady, true);
+  assert.equal(report.emailConnectionTestEnabled, false);
+  assert.equal(report.appointmentEmailTestEnabled, true);
+  assert.ok(report.checks.some(item => item.code === "STAGING_APPOINTMENT_EMAIL_TEST" && item.ok));
+  assert.ok(report.unverified.some(item => /Scoped appointment email.*current reviewed run.*fixed owner inbox/.test(item)));
+  assert.ok(report.unverified.some(item => item.includes("Previous requests and other runs are excluded")));
+  assert.equal(report.unverified.some(item => item.includes("appointment email forcibly disabled")), false);
+  for (const field of ["deploymentApproved", "readyForPublicLaunch", "networkAccessed", "databaseAccessed"]) assert.equal(report[field], false, field);
+  for (const value of [env.BREVO_API_KEY, env.STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID, env.MONGODB_URI, env.APPOINTMENT_MANAGEMENT_SECRET]) {
+    assert.equal(JSON.stringify(report).includes(value), false);
+  }
+});
+
+test("scoped appointment email preflight rejects malformed flags, conflicting tests and incomplete private configuration", () => {
+  for (const patch of [
+    ...["yes", "", true, false, null].map(STAGING_APPOINTMENT_EMAIL_TEST_ENABLED => ({ STAGING_APPOINTMENT_EMAIL_TEST_ENABLED })),
+    { DEPLOYMENT_STAGE: "production" }, { STAGING_ACCESS_PASSWORD: "short" },
+    { STAGING_EMAIL_TEST_ENABLED: "true" },
+    { STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: undefined },
+    { STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: "36b1254a-1a4d-3c42-9c7d-7fc75f7915ce" },
+    { BREVO_API_KEY: undefined }, { BREVO_API_KEY: "private\nkey" },
+    { PUBLIC_WEBSITE_ORIGIN: "http://preview.synthetic-shop.org" },
+    { APPOINTMENT_MANAGEMENT_SECRET: "short" },
+  ]) {
+    const report = checkStagingConfiguration({ env: { ...workflowFixture(), ...patch } });
+    assert.equal(report.configurationReady, false, Object.keys(patch)[0]);
+    assert.equal(report.appointmentEmailTestEnabled, false);
+    assert.ok(report.blockers.some(item => item.code === "STAGING_APPOINTMENT_EMAIL_TEST"));
+  }
+  assert.equal(checkStagingConfiguration({ env: { ...fixture(), STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "false" } }).configurationReady, true);
 });
 
 test("preflight reports never echo private or malformed configuration values", () => {
@@ -103,7 +147,32 @@ test("staging CLI distinguishes the configured manual test from disabled appoint
   const json = spawnSync(process.execPath, [script, "--json"], { env, encoding: "utf8" });
   assert.equal(json.status, 0, json.stderr);
   assert.equal(JSON.parse(json.stdout).emailConnectionTestEnabled, true);
+  assert.equal(JSON.parse(json.stdout).appointmentEmailTestEnabled, false);
   assert.equal(json.stdout.includes(key), false);
+});
+
+test("staging CLI distinguishes a scoped appointment workflow from default mail-off staging in text and JSON", () => {
+  const env = workflowFixture();
+  const result = spawnSync(process.execPath, [script], { env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Scoped appointment email testing is enabled for new requests in the current reviewed run and fixed owner inbox only/);
+  assert.match(result.stdout, /Previous requests remain excluded/);
+  assert.match(result.stdout, /Public bookings are not approved/);
+  assert.equal(result.stdout.includes("Staging keeps ordinary appointment email disabled"), false);
+  const json = spawnSync(process.execPath, [script, "--json"], { env, encoding: "utf8" });
+  assert.equal(json.status, 0, json.stderr);
+  const report = JSON.parse(json.stdout);
+  assert.equal(report.appointmentEmailTestEnabled, true);
+  assert.equal(report.emailConnectionTestEnabled, false);
+  assert.equal(report.readyForPublicLaunch, false);
+  for (const value of [env.BREVO_API_KEY, env.STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID, env.APPOINTMENT_MANAGEMENT_SECRET]) {
+    assert.equal(`${result.stdout}${result.stderr}${json.stdout}${json.stderr}`.includes(value), false);
+  }
+  const invalid = spawnSync(process.execPath, [script, "--json"], {
+    env: { ...env, STAGING_EMAIL_TEST_ENABLED: "true" }, encoding: "utf8",
+  });
+  assert.equal(invalid.status, 1, invalid.stderr);
+  assert.ok(JSON.parse(invalid.stdout).blockers.some(item => item.code === "STAGING_APPOINTMENT_EMAIL_TEST"));
 });
 
 test("staging CLI does not load private development env files", async t => {

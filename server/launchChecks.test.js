@@ -83,6 +83,18 @@ test("production preflight rejects an active or malformed staging-only email tes
   assert.equal(checked({ STAGING_EMAIL_TEST_ENABLED: "false" }).configurationReady, true);
 });
 
+test("production preflight rejects scoped appointment email test mode and malformed flags without exposing its run", () => {
+  const runId = "36b1254a-1a4d-4c42-9c7d-7fc75f7915ce";
+  for (const flag of ["true", "yes", "", true, false, null]) {
+    const report = checked({ STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: flag, STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: runId });
+    assert.equal(report.configurationReady, false);
+    assert.equal(codePasses(report, "STAGING_APPOINTMENT_EMAIL_TEST_ENABLED"), false);
+    assert.equal(JSON.stringify(report).includes(runId), false);
+  }
+  assert.equal(checked({ STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "false" }).configurationReady, true);
+  assert.equal(codePasses(checked(), "STAGING_APPOINTMENT_EMAIL_TEST_ENABLED"), true);
+});
+
 test("public origin rejects insecure, reserved, private, mapped and malformed addresses", () => {
   for (const origin of [undefined, "", "http://shop.synthetic-shop.org", "https://localhost", "https://localhost.", "https://shop.example.com.", "https://example.invalid", "https://127.0.0.1", "https://10.0.0.1", "https://172.16.0.1", "https://192.168.1.1", "https://[::1]", "https://[fd00::1]", "https://[::ffff:127.0.0.1]", "https://[::ffff:192.168.1.1]", "https://user:password@shop.synthetic-shop.org", "https://shop.synthetic-shop.org/path", "https://shop.synthetic-shop.org?tracking=x", "https://shop.synthetic-shop.org#token", "https://shop.synthetic-shop.org\n"]) {
     assert.equal(codePasses(checked({ PUBLIC_WEBSITE_ORIGIN: origin }), "PUBLIC_WEBSITE_ORIGIN"), false, String(origin));
@@ -204,6 +216,20 @@ test("CLI supports API-only transport in its isolated runtime without loading cr
   assert.equal(report.networkAccessed, false);
   assert.equal(result.stdout.includes(env.BREVO_API_KEY), false);
   assert.equal(result.stdout.includes(env.MONGODB_URI), false);
+});
+
+test("public-launch CLI blocks staging appointment workflow mode even with otherwise approved synthetic configuration", async t => {
+  const root = await cliFixture(t);
+  const runId = "36b1254a-1a4d-4c42-9c7d-7fc75f7915ce";
+  const env = { ...validApiEnv(), STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true", STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: runId };
+  const result = spawnSync(process.execPath, [join(root, "scripts/check-launch.js"), "--json"], { cwd: root, env, encoding: "utf8" });
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.configurationReady, false);
+  assert.equal(codePasses(report, "STAGING_APPOINTMENT_EMAIL_TEST_ENABLED"), false);
+  assert.equal(report.readyForPublicLaunch, false);
+  assert.equal(result.stdout.includes(runId), false);
+  assert.equal(result.stdout.includes(env.BREVO_API_KEY), false);
 });
 
 test("CLI does not load private env files and exits blocked with readable fixed messages", async t => {

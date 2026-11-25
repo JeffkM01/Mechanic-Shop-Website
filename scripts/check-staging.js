@@ -15,7 +15,11 @@ try {
       console.log(report.configurationReady ? "CONFIGURATION CHECKS PASSED. Deployment still requires explicit approval." : "CONFIGURATION BLOCKED. Nothing was deployed.");
       for (const blocker of report.blockers) console.log(`[BLOCKED] ${blocker.code}: ${blocker.message}`);
       for (const item of report.unverified) console.log(`[UNVERIFIED] ${item}`);
-      console.log(`Staging keeps ordinary appointment email disabled. The fixed-inbox manual test is ${report.emailConnectionTestEnabled ? "enabled" : "disabled"}. Public bookings are not approved.`);
+      if (report.appointmentEmailTestEnabled) {
+        console.log("Scoped appointment email testing is enabled for new requests in the current reviewed run and fixed owner inbox only. Previous requests remain excluded. Public bookings are not approved.");
+      } else {
+        console.log(`Staging keeps ordinary appointment email disabled. The fixed-inbox manual test is ${report.emailConnectionTestEnabled ? "enabled" : "disabled"}. The scoped appointment workflow test is disabled. Public bookings are not approved.`);
+      }
     }
     process.exitCode = report.configurationReady ? 0 : 1;
   }

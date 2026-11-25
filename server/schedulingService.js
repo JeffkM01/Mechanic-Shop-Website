@@ -6,12 +6,14 @@ import { validateDeclineReason } from "../shared/declineReasons.js";
 import { validateCancellation } from "../shared/cancellations.js";
 import { shopTimezoneFormatter } from "../shared/shopTime.js";
 import { defaultSettings, mergeSettings, validateSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
+import { APPOINTMENT_EMAIL_TEST_FIELD, isOwnedEmailTestRecipient, validateEmailDeliveryScope } from "./appointmentEmailScope.js";
 
 const idOf = (value) => String(value);
 const overlaps = (a, b) => +new Date(a.startAt) < +new Date(b.occupiedUntil ?? b.endAt) && +new Date(b.startAt) < +new Date(a.occupiedUntil ?? a.endAt);
 const conflict = () => new SchedulingError(409, "That start time is no longer available. Please choose another time.", "SLOT_UNAVAILABLE");
 
-export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date(), management = null }) {
+export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date(), management = null, deliveryScope = null }) {
+  const emailScope = validateEmailDeliveryScope(deliveryScope);
   async function readState() {
     for (let attempt = 0; attempt < 64; attempt++) {
       const state = await SchedulingState.findById("shop").lean();
@@ -297,6 +299,11 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
   }
 
   async function createAppointment(value) {
+    if (emailScope && !isOwnedEmailTestRecipient(value?.email)) {
+      const failure = new SchedulingError(400, "Use the fixed owned inbox while the private appointment email test is active.", "EMAIL_TEST_RECIPIENT_REQUIRED");
+      failure.fields = { email: `Use ${emailScope.recipient} for this private email test.` };
+      throw failure;
+    }
     const id = new mongoose.Types.ObjectId();
     const reserved = await commit((state, clock, current) => {
       const candidate = buildCandidate(state.settings, value.service, value.date, value.time, clock);
@@ -311,13 +318,17 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     // expiry, but must never release a slot while a write might still commit.
     let appointment = await new Appointment({
       ...value, _id: id, status: "pending", scheduling: snapshot(reserved.reservation),
+      // Explicit undefined also discards a caller-forged marker in ordinary
+      // mode. Reviews/cancellations never add or replace this creation marker.
+      [APPOINTMENT_EMAIL_TEST_FIELD]: emailScope?.runId,
+      ...(emailScope ? { email: emailScope.recipient } : {}),
       ...(management?.enabled ? { management: management.createGrant(idOf(id), reserved.clock) } : {}),
     }).save({ writeConcern: { w: "majority", j: true } });
     if (reserved.attemptAutomatic) {
       try { appointment = await reviewAppointment(idOf(id), "confirmed", { automatic: true }); }
       catch (error) {
         if (!(error instanceof SchedulingError) || error.status !== 409) throw error;
-        appointment = await Appointment.findById(id);
+        appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`);
       }
     }
     return appointment;
@@ -361,11 +372,11 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     for (let attempt = 0; attempt < 16; attempt++) {
       // Lean reads preserve absent legacy status/flags instead of applying
       // schema defaults that would make the conditional write miss the record.
-      const appointment = await Appointment.findById(id).lean();
+      const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
       if (!appointment) throw new SchedulingError(404, "Appointment not found.");
       // Repeated requests do not replace the original actor, explanation,
       // timestamp or sent flags, and do not create new notification intents.
-      if (appointment.status === "cancelled") return Appointment.findById(id);
+      if (appointment.status === "cancelled") return Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`);
       const clock = new Date(now());
       const eligibility = getCancellationEligibility(appointment, clock);
       if (!eligibility.canCancel) throw new SchedulingError(409, eligibility.message, eligibility.code);
@@ -397,6 +408,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       };
       const cancelled = await Appointment.findOneAndUpdate(filter, { $set: change }, {
         returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true },
+        projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}`,
       });
       if (!cancelled) continue;
       // The terminal record and email intents are durable before releasing its
@@ -424,7 +436,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         decline: { ...prepared.value, declinedAt: new Date(now()), source: "mechanic" },
         "notificationState.decisionCustomer": "pending",
       };
-      const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } };
+      const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}` };
       // A queued pending receipt would contradict this terminal decision. The
       // conditional branches suppress only an unsent receipt and preserve one
       // already sent, even if the dispatcher changes that flag concurrently.
@@ -438,7 +450,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       await commit((_state, _clock, current) => ({ next: { reservations: current.reservations.filter(item => idOf(item.appointmentId) !== id) }, result: null }));
       return declined;
     }
-    const appointment = await Appointment.findById(id).lean();
+    const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
     if (!appointment || (appointment.status && appointment.status !== "pending")) throw new SchedulingError(409, "This request was already reviewed or no longer exists.");
     const confirmed = await commit((state, clock, current) => {
       const definition = getService(appointment.service, getServiceCatalog(state.settings));
@@ -480,7 +492,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       scheduling: { ...snapshot(confirmed.reservation), holdExpiresAt: appointment.scheduling?.holdExpiresAt, confirmedAt: confirmed.clock },
       "notificationState.decisionCustomer": "pending",
     };
-    const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true } };
+    const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}` };
     let updated;
     if (automatic) {
       // Status and suppression commit together. A pending receipt must not

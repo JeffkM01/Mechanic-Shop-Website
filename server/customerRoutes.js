@@ -26,7 +26,8 @@ export function customerAppointmentPayload(context, scheduling, notifications) {
       originalTime: cancellation.originalTime, timezone: cancellation.timezone,
     } } : {}),
   };
-  const notificationStatus = flag => !notifications.enabled ? "disabled" : flag === "pending" ? "queued" : flag || "not-applicable";
+  const emailEnabled = notifications.enabled && (typeof notifications.isEnabledFor !== "function" || notifications.isEnabledFor(saved));
+  const notificationStatus = flag => !emailEnabled ? "disabled" : flag === "pending" ? "queued" : flag || "not-applicable";
   return {
     appointment, csrfToken: context.csrfToken, sessionExpiresAt: context.sessionExpiresAt,
     ...(saved.status === "cancelled" ? { notifications: {

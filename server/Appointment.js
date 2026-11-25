@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { DECLINE_REASONS, DECLINE_EXPLANATION_MIN, DECLINE_MESSAGE_MAX } from "../shared/declineReasons.js";
 import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS, CANCELLATION_MESSAGE_MAX, CANCELLATION_EXPLANATION_MAX } from "../shared/cancellations.js";
 import { managementSchema } from "./customerManagementSchema.js";
+import { APPOINTMENT_EMAIL_TEST_FIELD, EMAIL_TEST_RUN_PATTERN } from "./appointmentEmailScope.js";
 
 const notificationKinds = ["requestCustomer", "requestMechanic", "decisionCustomer", "cancellationCustomer", "cancellationMechanic"];
 const failureCodes = ["invalid-recipient", "recipient-rejected", "transport-error", "acknowledgement-error", "record-error"];
@@ -32,6 +33,12 @@ export const appointmentSchema = new mongoose.Schema({
   notes: { type: String, default: "", maxlength: 1000 },
   status: { type: String, enum: ["pending", "confirmed", "declined", "cancelled"], default: "pending" },
   management: { type: managementSchema, select: false, default: undefined },
+  // Only newly created, server-scoped synthetic requests receive this marker.
+  // It is private, immutable, and absent on every historical/ordinary record.
+  [APPOINTMENT_EMAIL_TEST_FIELD]: {
+    type: String, match: EMAIL_TEST_RUN_PATTERN, maxlength: 36, lowercase: true,
+    immutable: true, select: false, default: undefined,
+  },
   cancellation: {
     type: new mongoose.Schema({
       by: { type: String, enum: ["customer", "mechanic"], required: true },
@@ -92,6 +99,9 @@ export const appointmentSchema = new mongoose.Schema({
 
 appointmentSchema.index({ status: 1, date: 1 });
 appointmentSchema.index({ "scheduling.startAt": 1, status: 1 });
+appointmentSchema.index({ [APPOINTMENT_EMAIL_TEST_FIELD]: 1, createdAt: 1 }, {
+  name: "appointment_email_test_run", partialFilterExpression: { [APPOINTMENT_EMAIL_TEST_FIELD]: { $exists: true } },
+});
 for (const kind of notificationKinds) {
   appointmentSchema.index({ [`notificationState.${kind}`]: 1, [`notificationRetry.${kind}.nextAttemptAt`]: 1, createdAt: 1 });
 }

@@ -136,6 +136,29 @@ jobs:
           docker exec -i "$container_id" node --input-type=module < scripts/smoke-staging.js
           docker stop --time 35 "$container_id" >/dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" = 0
+      - name: Check scoped appointment-email configuration without booking or sending
+        env:
+          MONGO_SERVICE_CONTAINER: ${{ job.services.mongodb.id }}
+        run: |
+          container_id="$(docker run -d --network "container:$MONGO_SERVICE_CONTAINER" \
+            -e CI=true \
+            -e DEPLOYMENT_STAGE=staging \
+            -e MONGODB_DATABASE=eds_staging_workflow_image_test_ci \
+            -e MONGODB_URI=mongodb://127.0.0.1:27017/eds_staging_workflow_image_test_ci \
+            -e STAGING_ACCESS_PASSWORD=Synthetic-staging-gateway-password-2026 \
+            -e MECHANIC_ADMIN_PASSWORD=Synthetic-image-CI-password-2026 \
+            -e BOOKING_RATE_LIMIT_ENABLED=true \
+            -e STAGING_EMAIL_TEST_ENABLED=false \
+            -e STAGING_APPOINTMENT_EMAIL_TEST_ENABLED=true \
+            -e STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID=38e5960b-d567-4b72-a826-195111ffae41 \
+            -e BREVO_API_KEY=Synthetic-private-API-marker-for-packaging-only \
+            -e PUBLIC_WEBSITE_ORIGIN=https://staging.synthetic-shop.org \
+            -e APPOINTMENT_MANAGEMENT_SECRET=XV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV0 \
+            eds-auto-shop:ci)"
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          docker exec -i "$container_id" node --input-type=module < scripts/smoke-appointment-email-workflow.js
+          docker stop --time 35 "$container_id" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" = 0
       - name: Install Chromium and browser dependencies
         run: npx playwright install --with-deps chromium
       - name: Test customer and staff workflows

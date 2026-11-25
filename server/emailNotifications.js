@@ -1,6 +1,8 @@
 import { buildEmail, EMAIL_KINDS } from "./emailTemplates.js";
 import { fieldLimits, isValidEmailAddress } from "../shared/appointmentFields.js";
 import { createBrevoApiTransport, readEmailConfiguration } from "./emailTransport.js";
+import { appointmentEmailScopeQuery, appointmentMatchesEmailScope, protectAppointmentTestEmail,
+  validateEmailDeliveryScope, OWNED_EMAIL_TEST_FROM, OWNED_EMAIL_TEST_RECIPIENT } from "./appointmentEmailScope.js";
 
 const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 24 * 60 * 60 * 1000;
@@ -27,12 +29,22 @@ function retryDue(appointment, kind, clock) {
 
 // MongoDB stores the queued email flags in each Appointment document.
 // Only one local API process should run this dispatcher at a time.
-export async function createEmailNotifications({ Appointment, env = process.env, transport, logger = console, management = null, now = () => new Date() }) {
-  const configuration = readEmailConfiguration(env);
-  if (!configuration) {
+export async function createEmailNotifications({ Appointment, env = process.env, transport, logger = console, management = null, deliveryScope = null, now = () => new Date() }) {
+  const scope = validateEmailDeliveryScope(deliveryScope);
+  const disabled = () => {
     const stop = async () => {};
-    return { enabled: false, start: () => stop, stop, kick() {}, processPending: async () => {} };
-  }
+    return { enabled: false, isEnabledFor: () => false, start: () => stop, stop, kick() {}, processPending: async () => {} };
+  };
+  // A full private staging environment must never accidentally open the old
+  // queue. Only the explicitly scoped factory path may deliver test messages.
+  if (env.DEPLOYMENT_STAGE === "staging" && !scope) return disabled();
+  if (scope && env.DEPLOYMENT_STAGE !== "staging") throw new Error("Scoped appointment email delivery requires protected staging configuration.");
+  const configuration = readEmailConfiguration(env);
+  if (!configuration) return disabled();
+  if (scope && (configuration.transport !== "brevo_api" || configuration.from !== OWNED_EMAIL_TEST_FROM
+    || configuration.mechanicEmail !== OWNED_EMAIL_TEST_RECIPIENT)) throw new Error("Scoped appointment email delivery requires the fixed owned inbox and HTTPS transport.");
+  const isEnabledFor = appointment => appointmentMatchesEmailScope(appointment, scope);
+  const scopedFilter = filter => ({ ...filter, ...appointmentEmailScopeQuery(scope) });
 
   const mailer = transport ?? (configuration.transport === "brevo_api"
     ? createBrevoApiTransport({ apiKey: configuration.apiKey })
@@ -69,7 +81,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
     };
     // Pin current intent: a concurrent cancellation/decision may have suppressed
     // this message. Neither a failure nor an acknowledgement can reopen it.
-    await Appointment.updateOne({ _id: appointment._id, [`notificationState.${kind}`]: "pending" }, {
+    await Appointment.updateOne(scopedFilter({ _id: appointment._id, [`notificationState.${kind}`]: "pending" }), {
       $set: { [`notificationRetry.${kind}`]: metadata, ...(failure.permanent ? { [`notificationState.${kind}`]: "failed" } : {}) },
     }, { runValidators: true, writeConcern: { w: "majority", j: true } });
     logger.error(`Notification ${kind} failed for appointment ${appointment._id}; ${failure.permanent ? "recipient needs review" : "delivery will be retried"}.`);
@@ -86,7 +98,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
         [`notificationState.${kind}`]: "pending",
         $or: [{ [`notificationRetry.${kind}.nextAttemptAt`]: null }, { [`notificationRetry.${kind}.nextAttemptAt`]: { $lte: clock } }],
       }));
-      const appointments = await Appointment.find({ $or: unsent })
+      const appointments = await Appointment.find(scopedFilter({ $or: unsent }))
         .sort({ createdAt: 1 }).limit(50).lean();
 
       for (const queued of appointments) {
@@ -100,8 +112,8 @@ export async function createEmailNotifications({ Appointment, env = process.env,
             // cancellation may have been saved since it was read, or even
             // while the preceding email was in flight. Read current intent
             // before every kind; management verifiers remain private here.
-            appointment = await Appointment.findById(queued._id).select("+management +notificationRetry").lean();
-            if (!appointment) continue;
+            appointment = await Appointment.findById(queued._id).select("+management +notificationRetry +notificationTestRunId").lean();
+            if (!isEnabledFor(appointment)) continue;
             const automaticConfirmation = appointment.status === "confirmed" && appointment.scheduling?.confirmationSource === "automatic";
             const suppress = appointment.status === "cancelled" ? ["requestCustomer", "decisionCustomer"]
               : appointment.status === "declined" || automaticConfirmation ? ["requestCustomer"] : [];
@@ -109,11 +121,11 @@ export async function createEmailNotifications({ Appointment, env = process.env,
               if (appointment.notificationState?.[staleKind] !== "pending") continue;
               // Preserve sent history. A failed write leaves a retryable
               // queue and never permits an obsolete customer message.
-              await Appointment.updateOne({
+              await Appointment.updateOne(scopedFilter({
                 _id: appointment._id, status: appointment.status,
                 ...(automaticConfirmation ? { "scheduling.confirmationSource": "automatic" } : {}),
                 [`notificationState.${staleKind}`]: "pending",
-              }, { $set: { [`notificationState.${staleKind}`]: "suppressed" } });
+              }), { $set: { [`notificationState.${staleKind}`]: "suppressed" } });
               appointment.notificationState[staleKind] = "suppressed";
             }
             if (appointment.notificationState?.[kind] !== "pending" || !retryDue(appointment, kind, new Date(now()))) continue;
@@ -121,7 +133,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
               || (kind === "decisionCustomer" && appointment.status === "confirmed");
             const managementLink = customerLink && management ? await management.emailLink(appointment) : null;
             phase = "message";
-            const message = buildEmail(kind, appointment, { ...messageOptions, managementLink });
+            const message = protectAppointmentTestEmail(buildEmail(kind, appointment, { ...messageOptions, managementLink }), scope);
             if (stopped) break;
             // A status change after this read / once transport starts cannot
             // recall an email. Delivery is at-least-once, never exactly-once.
@@ -130,7 +142,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
             // Mark as sent only after the email provider accepts it.
             phase = "acknowledgement";
             await Appointment.updateOne(
-              { _id: appointment._id, [`notificationState.${kind}`]: "pending" },
+              scopedFilter({ _id: appointment._id, [`notificationState.${kind}`]: "pending" }),
               { $set: { [`notificationState.${kind}`]: "sent" } },
             );
           } catch (error) {
@@ -177,5 +189,5 @@ export async function createEmailNotifications({ Appointment, env = process.env,
     return draining ?? Promise.resolve();
   }
 
-  return { enabled: true, start, stop, kick, processPending };
+  return { enabled: true, isEnabledFor, start, stop, kick, processPending };
 }

@@ -16,6 +16,8 @@ import { notificationEnvironmentForStage, readStagingSafety } from "./stagingSaf
 import { createBookingRateLimiter, readBookingAbuseConfig } from "./bookingAbuseProtection.js";
 import { startupFailureMessage } from "./startupDiagnostics.js";
 import { createEmailConnectionTest } from "./emailConnectionTest.js";
+import { readAppointmentEmailTestConfiguration } from "./appointmentEmailTest.js";
+import { OWNED_EMAIL_TEST_RECIPIENT } from "./appointmentEmailScope.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -33,6 +35,8 @@ try {
   const uri = process.env.MONGODB_URI;
   startupPhase = "MECHANIC_AUTH_CONFIGURATION";
   const auth = createMechanicAuth(process.env.MECHANIC_ADMIN_PASSWORD, { secureCookies: config.production });
+  startupPhase = "APPOINTMENT_EMAIL_TEST_CONFIGURATION";
+  const appointmentEmailTest = readAppointmentEmailTestConfiguration({ staging });
   startupPhase = "EMAIL_TEST_CONFIGURATION";
   const emailTest = createEmailConnectionTest({ staging });
   startupPhase = "DATABASE_URI_CONFIGURATION";
@@ -43,20 +47,22 @@ try {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000, ...(staging.enabled ? { dbName: staging.databaseName } : {}) });
   startupPhase = "DATABASE_INDEXES";
   await Promise.all([Appointment.init(), SchedulingState.init()]);
-  const notificationEnv = notificationEnvironmentForStage(staging);
+  const notificationEnv = appointmentEmailTest.enabled ? appointmentEmailTest.notificationEnv : notificationEnvironmentForStage(staging);
+  const deliveryScope = appointmentEmailTest.deliveryScope;
   startupPhase = "CUSTOMER_MANAGEMENT";
-  const management = createCustomerManagement({ Appointment, env: notificationEnv });
+  const management = createCustomerManagement({ Appointment, env: notificationEnv, deliveryScope });
   startupPhase = "SCHEDULING_SETTINGS";
-  const scheduling = createSchedulingService({ Appointment, SchedulingState, management });
+  const scheduling = createSchedulingService({ Appointment, SchedulingState, management, deliveryScope });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
-  // Ordinary staging notifications never construct a transport, even if real
-  // mail credentials were supplied. The independent optional probe never reads
-  // this queue or enables appointment-management links.
+  // Default staging keeps the dispatcher disabled. Explicit workflow tests
+  // receive a locked HTTPS environment and active-run scope; old requests are
+  // never retagged or admitted to that queue. The standalone probe is separate.
   startupPhase = "NOTIFICATIONS";
-  notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv });
+  notifications = await createEmailNotifications({ Appointment, management, env: notificationEnv, deliveryScope });
   startupPhase = "HTTP_APPLICATION";
   const operationTracker = createOperationTracker();
   const app = createApp({ Appointment, scheduling, auth, notifications, management, emailTest,
+    appointmentEmailTest: { enabled: appointmentEmailTest.enabled, recipient: OWNED_EMAIL_TEST_RECIPIENT },
     operationTracker,
     requestGate: staging.requestGate, bookingRateLimiter,
     trustProxy: config.trustProxy,
@@ -74,7 +80,7 @@ try {
   startupPhase = "NOTIFICATIONS";
   notifications.start();
   console.log(`Appointment service listening on ${config.host}:${config.port}.`);
-  console.log(`Frontend serving ${config.serveFrontend ? "enabled" : "disabled"}. Appointment email notifications ${notifications.enabled ? "enabled" : "disabled (staging or mail not configured)"}.`);
+  console.log(`Frontend serving ${config.serveFrontend ? "enabled" : "disabled"}. Appointment email notifications ${notifications.enabled ? appointmentEmailTest.enabled ? "enabled for the owned-inbox test run only" : "enabled" : "disabled (staging or mail not configured)"}.`);
 } catch (error) {
   // Never echo arbitrary MongoDB, SMTP, request or environment values.
   console.error(startupFailureMessage(startupPhase, error));

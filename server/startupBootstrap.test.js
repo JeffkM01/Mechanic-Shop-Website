@@ -58,6 +58,12 @@ const cases = [
   ["invalid email test flag", { STAGING_EMAIL_TEST_ENABLED: "SYNTHETIC_INVALID_BOOLEAN" }, "EMAIL_TEST_CONFIGURATION"],
   ["enabled email test without an API key", { STAGING_EMAIL_TEST_ENABLED: "true" }, "EMAIL_TEST_CONFIGURATION"],
   ["email test outside protected staging", { DEPLOYMENT_STAGE: "production", STAGING_EMAIL_TEST_ENABLED: "true", BREVO_API_KEY: "SYNTHETIC_BREVO_PRIVATE_KEY_NOT_FOR_LOGS" }, "EMAIL_TEST_CONFIGURATION"],
+  ["invalid appointment workflow flag", { STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "yes" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
+  ["appointment workflow outside protected staging", { DEPLOYMENT_STAGE: "production", STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
+  ["appointment workflow without a run identity", { STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
+  ["appointment workflow cannot share the standalone probe", { STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true", STAGING_EMAIL_TEST_ENABLED: "true" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
+  ["appointment workflow without a provider key", { STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true", STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: "38e5960b-d567-4b72-a826-195111ffae41" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
+  ["appointment workflow without management configuration", { STAGING_APPOINTMENT_EMAIL_TEST_ENABLED: "true", STAGING_APPOINTMENT_EMAIL_TEST_RUN_ID: "38e5960b-d567-4b72-a826-195111ffae41", BREVO_API_KEY: "SYNTHETIC_BREVO_PRIVATE_KEY_NOT_FOR_LOGS" }, "APPOINTMENT_EMAIL_TEST_CONFIGURATION"],
 ];
 
 test("actual bootstrap identifies configuration failures before any database connection without exposing values", async t => {
