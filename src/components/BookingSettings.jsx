@@ -9,7 +9,7 @@ const policies = [
   { key: "minimumNoticeHours", label: "Minimum advance notice (hours)", min: 0, max: 720, description: "How much notice a customer must give when submitting a new appointment request." },
   { key: "bookingHorizonDays", label: "Booking horizon (days)", min: 1, max: 365, description: "How far ahead customers can request appointments, using the shop’s local calendar dates." },
   { key: "startIncrementMinutes", label: "Appointment start increment (minutes)", min: 5, max: 120, description: "Spacing between offered start times. This must divide evenly into a 24-hour day, such as 15, 30, or 60 minutes." },
-  { key: "bufferMinutes", label: "Appointment buffer (minutes)", min: 0, max: 120, description: "Extra time reserved after an appointment for cleanup or preparation." },
+  { key: "bufferMinutes", label: "Appointment buffer (minutes)", min: 0, max: 120, description: "Extra time reserved after each appointment for cleanup, preparation, or planned travel. This does not calculate driving time." },
   { key: "pendingHoldHours", label: "Pending request hold duration (hours)", min: 1, max: 168, description: "How long a pending request provisionally reserves its time. The request stays on file after the hold expires." },
 ];
 

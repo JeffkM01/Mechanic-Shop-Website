@@ -68,7 +68,7 @@ export default function Home() {
 
       <section className="home-steps section-pad" aria-labelledby="home-steps-title">
         <div className="site-container"><div className="section-heading"><div><p className="eyebrow">FROM HERE TO YOUR NEXT VISIT</p><h2 id="home-steps-title">A little less guesswork.</h2></div><Link className="text-link" to="/appointment">Start your request <Icon name="arrow" /></Link></div>
-          <ol className="home-step-grid"><li><span>01 /</span><h3>Tell us about your car.</h3><p>Choose a service, describe what you’re noticing, and share a preferred time.</p></li><li><span>02 /</span><h3>Check your appointment status.</h3><p>We’ll show whether your appointment is confirmed or awaiting mechanic review.</p></li><li><span>03 /</span><h3>Plan your next step.</h3><p>Wait for confirmation before visiting. Have a question? Check our contact page.</p></li></ol>
+          <ol className="home-step-grid"><li><span>01 /</span><h3>Tell us about your car.</h3><p>Choose a service, describe what you’re noticing, and share a preferred time.</p></li><li><span>02 /</span><h3>Check your appointment status.</h3><p>We’ll show whether your appointment is confirmed or awaiting mechanic review.</p></li><li><span>03 /</span><h3>Plan your next step.</h3><p>Check your saved status and agree the service arrangements. Have a question? Check our contact page.</p></li></ol>
         </div>
       </section>
       <BookingBanner />

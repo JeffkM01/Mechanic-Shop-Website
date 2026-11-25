@@ -6,7 +6,11 @@
     "emailConfirmed": true,
     "phone": null,
     "email": "contact@edsautoshop.com",
-    "addressLines": []
+    "addressLines": [],
+    "mobileService": {
+      "serviceArea": null,
+      "visitInstructions": "Email your city or ZIP code and the service you need to discuss the location and travel arrangements before booking."
+    }
   },
   "privacy": {
     "approved": false,

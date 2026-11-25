@@ -7,7 +7,8 @@ import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { businessProfile, businessProfileLaunchIssues, validateBusinessProfile } from "./businessProfile.js";
-import { approvedBusinessProfile, draftBusinessProfile } from "../tests/business-profile-fixtures.js";
+import { approvedBusinessProfile, draftBusinessProfile, emailOnlyBusinessProfile,
+  approvedMobileBusinessProfile, draftMobileBusinessProfile } from "../tests/business-profile-fixtures.js";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
 const approvedFixture = approvedBusinessProfile;
@@ -44,16 +45,19 @@ test("unit suite accepts an approved source profile", async t => {
     cp(join(project, "tests/business-profile-fixtures.js"), join(root, "tests/business-profile-fixtures.js")),
   ]);
   await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
-  // Only this disposable copy receives approved synthetic values. The source
-  // profile and its owner's approval state are never modified by the test.
-  await writeFile(join(root, "shared/businessProfile.json"), JSON.stringify(approvedFixture()));
   const unitFiles = (await Promise.all(["shared", "src/utils"].map(async directory =>
     (await readdir(join(root, directory))).filter(file => file.endsWith(".test.js")).map(file => join(directory, file))
   ))).flat();
-  const result = spawnSync(process.execPath, ["--test", "--test-skip-pattern=^unit suite accepts an approved source profile$", ...unitFiles], {
-    cwd: root, env: {}, encoding: "utf8", timeout: 30_000,
-  });
-  assert.equal(result.status, 0, `${result.error || ""}\n${result.stdout}\n${result.stderr}`);
+  // Only this disposable copy receives approved synthetic values. Both legacy
+  // and mobile approval must remain compatible with the whole unit suite.
+  // The source profile and its owner's approval state are never modified.
+  for (const profile of [approvedFixture(), approvedMobileBusinessProfile()]) {
+    await writeFile(join(root, "shared/businessProfile.json"), JSON.stringify(profile));
+    const result = spawnSync(process.execPath, ["--test", "--test-skip-pattern=^unit suite accepts an approved source profile$", ...unitFiles], {
+      cwd: root, env: {}, encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(result.status, 0, `${result.error || ""}\n${result.stdout}\n${result.stderr}`);
+  }
 });
 
 test("public profile fields are strict and errors never echo extra secret values", () => {
@@ -121,6 +125,103 @@ test("legacy and explicitly unapproved draft inboxes retain their approval state
   source.contact.emailConfirmed = false;
   assert.deepEqual(validateBusinessProfile(source), source);
   assert.ok(businessProfileLaunchIssues(source).some(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED"));
+});
+
+test("legacy version-1 profiles retain their exact shape without mobile fields", () => {
+  for (const source of [draftBusinessProfile(), emailOnlyBusinessProfile(), approvedFixture()]) {
+    const validated = validateBusinessProfile(source);
+    assert.deepEqual(validated, source);
+    assert.equal(Object.hasOwn(validated.contact, "mobileService"), false);
+  }
+});
+
+test("an approved synthetic mobile profile can use email-only contact without a public street address", () => {
+  const source = approvedMobileBusinessProfile();
+  const validated = validateBusinessProfile(source);
+  assert.deepEqual(validated, source);
+  assert.equal(validated.contact.phone, null);
+  assert.deepEqual(validated.contact.addressLines, []);
+  assert.deepEqual(businessProfileLaunchIssues(validated), []);
+  source.contact.phone = "202-555-0148";
+  assert.equal(validateBusinessProfile(source).contact.phone, source.contact.phone);
+});
+
+test("draft mobile coverage remains a launch blocker without requiring a phone or public address", () => {
+  const source = draftMobileBusinessProfile();
+  const validated = validateBusinessProfile(source);
+  assert.deepEqual(validated, source);
+  const issues = businessProfileLaunchIssues(source);
+  const contactIssue = issues.find(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED");
+  assert.match(contactIssue.message, /public email, service area, and visit instructions/);
+  assert.doesNotMatch(contactIssue.message, /phone|address/);
+  for (const code of ["PRIVACY_NOTICE_UNAPPROVED", "PRIVACY_RETENTION_POLICY_UNCONFIRMED", "CANCELLATION_POLICY_UNAPPROVED"]) assert.ok(issues.some(issue => issue.code === code), code);
+  source.contact.confirmed = true;
+  assert.throws(() => validateBusinessProfile(source), /Confirm the public email, service area, and visit instructions/);
+  source.contact.confirmed = false;
+  source.contact.mobileService.serviceArea = "Synthetic district, awaiting approval.";
+  assert.ok(businessProfileLaunchIssues(source).some(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED"));
+});
+
+test("mobile contact approval cannot bypass missing email, coverage or visit arrangements", () => {
+  for (const field of ["email", "serviceArea", "visitInstructions"]) {
+    const source = approvedMobileBusinessProfile();
+    if (field === "email") source.contact.email = null;
+    else source.contact.mobileService[field] = null;
+    assert.throws(() => validateBusinessProfile(source), /Confirm the public email, service area, and visit instructions/);
+  }
+  const source = approvedMobileBusinessProfile();
+  source.contact.confirmed = false;
+  assert.throws(() => validateBusinessProfile(source), /Approve privacy information/);
+  source.privacy.approved = false;
+  assert.ok(businessProfileLaunchIssues(source).some(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED"));
+});
+
+test("mobile profiles reject public addresses and retain strict phone validation", () => {
+  for (const create of [draftMobileBusinessProfile, approvedMobileBusinessProfile]) {
+    const source = create();
+    source.contact.addressLines = ["Synthetic address that must not be published"];
+    assert.throws(() => validateBusinessProfile(source), /public address lines empty/);
+    source.contact.addressLines = [];
+    for (const phone of ["call me", "202-555-0148 ext 3", "x".repeat(25), "2025550148\n"]) {
+      source.contact.phone = phone;
+      assert.throws(() => validateBusinessProfile(source));
+    }
+  }
+});
+
+test("mobile details accept only documented bounded text and never echo invalid values", () => {
+  const marker = "DO_NOT_ECHO_PRIVATE_MOBILE_VALUE";
+  for (const mobileService of [undefined, null, [], {}, true,
+    { serviceArea: null }, { visitInstructions: null },
+    { serviceArea: null, visitInstructions: null, apiKey: marker },
+    Object.assign(Object.create({ inherited: marker }), { serviceArea: null, visitInstructions: null })]) {
+    const source = draftMobileBusinessProfile(); source.contact.mobileService = mobileService;
+    assert.throws(() => validateBusinessProfile(source), /documented public fields/);
+    assert.equal(JSON.stringify(businessProfileLaunchIssues(source)).includes(marker), false);
+  }
+  for (const [field, maximum] of [["serviceArea", 300], ["visitInstructions", 600]]) {
+    for (const value of [undefined, "", " padded", "padded ", `${marker}\n`, `${marker}\u007f`, "x".repeat(maximum + 1), 42, false, [], {}]) {
+      const source = draftMobileBusinessProfile(); source.contact.mobileService[field] = value;
+      assert.throws(() => validateBusinessProfile(source), /trimmed text/);
+      assert.equal(JSON.stringify(businessProfileLaunchIssues(source)).includes(marker), false);
+    }
+    const source = draftMobileBusinessProfile(); source.contact.mobileService[field] = "x".repeat(maximum);
+    assert.equal(validateBusinessProfile(source).contact.mobileService[field].length, maximum);
+    source.contact.mobileService[field] = null;
+    assert.equal(validateBusinessProfile(source).contact.mobileService[field], null);
+  }
+});
+
+test("mobile validation returns an independent structure and freezes any shipped mobile details", () => {
+  const source = approvedMobileBusinessProfile();
+  const validated = validateBusinessProfile(source);
+  assert.notEqual(validated.contact.mobileService, source.contact.mobileService);
+  validated.contact.mobileService.serviceArea = "Changed only in returned details";
+  assert.notEqual(source.contact.mobileService.serviceArea, validated.contact.mobileService.serviceArea);
+  if (businessProfile.contact.mobileService) {
+    assert.equal(Object.isFrozen(businessProfile.contact.mobileService), true);
+    assert.throws(() => { businessProfile.contact.mobileService.serviceArea = "Unapproved coverage"; }, TypeError);
+  }
 });
 
 test("published privacy information requires all reviewed providers, retention, request handling, contact and date", () => {

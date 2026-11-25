@@ -8,13 +8,17 @@ import "../styles/AboutContact.css";
 
 export default function Contact() {
   const contact = businessProfile.contact;
+  const mobileService = contact.mobileService;
   const publicEmail = contact.confirmed || contact.emailConfirmed ? contact.email : null;
   const hours = usePublicShopHours();
   const verified = hours.data?.verified === true;
   const weekdays = [["Monday", "1"], ["Tuesday", "2"], ["Wednesday", "3"], ["Thursday", "4"], ["Friday", "5"], ["Saturday", "6"], ["Sunday", "0"]];
   const timeRange = formatPublicHoursInterval;
-  const phoneDigits = contact.confirmed ? contact.phone.replace(/\D/g, "") : "";
+  const phoneDigits = contact.confirmed && contact.phone ? contact.phone.replace(/\D/g, "") : "";
   const phoneHref = phoneDigits ? `tel:+${phoneDigits.length === 10 ? "1" : ""}${phoneDigits}` : null;
+  const mobileInstructions = contact.confirmed && mobileService?.visitInstructions
+    ? mobileService.visitInstructions
+    : "Email your city or ZIP code and the service you need to discuss location and travel arrangements before booking.";
   const today = verified ? dateInTimezone(new Date(), hours.data.timezone) : null;
   const closedDates = verified ? hours.data.closedDates.filter(date => date >= today) : [];
   return (
@@ -28,15 +32,17 @@ export default function Contact() {
       <section className="site-container section-pad contact-details" aria-labelledby="contact-details-heading">
         <div className="contact-intro">
           <div><p className="eyebrow">GET IN TOUCH</p><h2 id="contact-details-heading">A conversation away.</h2></div>
-          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>Contact details are being confirmed.</strong> {publicEmail ? "You can email us with appointment questions. Public phone, service area, and appointment location are awaiting approval." : "Public phone, email, service area, and appointment location are awaiting approval."} You can review appointment-request times online; travel arrangements still need confirmation.</span></p>}
+          {!contact.confirmed && <p className="contact-placeholder-note"><Icon name="chat" /><span><strong>{mobileService ? "Mobile service arrangements are being confirmed." : "Contact details are being confirmed."}</strong> {mobileService
+            ? "Email us to discuss service coverage, visit location, and travel arrangements before booking."
+            : publicEmail ? "You can email us with appointment questions. Service area and appointment location are awaiting approval." : "Public email, service area, and appointment location are awaiting approval."}</span></p>}
         </div>
         <div className="contact-cards">
-          <article className="contact-card">
-            <div className="contact-card-top"><Icon name="phone" /><span className="contact-placeholder-tag">{contact.confirmed ? "Shop contact" : "To be confirmed"}</span></div>
+          {phoneHref && <article className="contact-card">
+            <div className="contact-card-top"><Icon name="phone" /><span className="contact-placeholder-tag">Shop contact</span></div>
             <h3>Give us a call</h3>
-            <p className="contact-detail-value">{phoneHref ? <a href={phoneHref}>{contact.phone}</a> : "Phone number to be confirmed"}</p>
-            <p>{contact.confirmed ? "Contact the shop to discuss your vehicle or an existing appointment." : "A callable shop number will appear after Edward confirms it."}</p>
-          </article>
+            <p className="contact-detail-value"><a href={phoneHref}>{contact.phone}</a></p>
+            <p>Contact the shop to discuss your vehicle or an existing appointment.</p>
+          </article>}
           <article className="contact-card">
             <div className="contact-card-top"><Icon name="mail" /><span className="contact-placeholder-tag">{publicEmail ? "Shop contact" : "To be confirmed"}</span></div>
             <h3>Send an email</h3>
@@ -44,10 +50,15 @@ export default function Contact() {
             <p>{publicEmail ? "Use this address for appointment questions and shop inquiries." : "An approved public inbox will appear here when it is ready."}</p>
           </article>
           <article className="contact-card">
-            <div className="contact-card-top"><Icon name="pin" /><span className="contact-placeholder-tag">{contact.confirmed ? "Approved location" : "To be confirmed"}</span></div>
-            <h3>Service area &amp; location</h3>
-            <p className="contact-detail-value">{contact.confirmed ? contact.addressLines.map((line, index) => <span className="contact-address-line" key={index}>{line}</span>) : "Appointment location to be confirmed"}</p>
-            <p>{contact.confirmed ? "Check your confirmed appointment's location and saved service time before travelling." : "Service area and work-location details will appear after Edward confirms the arrangements."}</p>
+            <div className="contact-card-top"><Icon name="pin" /><span className="contact-placeholder-tag">{mobileService ? "Mobile mechanic" : contact.confirmed ? "Approved location" : "To be confirmed"}</span></div>
+            <h3>{mobileService ? "We come to you" : "Service area & location"}</h3>
+            {mobileService ? <>
+              <p className="contact-detail-value">{contact.confirmed && mobileService.serviceArea ? mobileService.serviceArea : "Email us to check service coverage."}</p>
+              <p>{mobileInstructions}</p>
+            </> : <>
+              <p className="contact-detail-value">{contact.confirmed ? contact.addressLines.map((line, index) => <span className="contact-address-line" key={index}>{line}</span>) : "Appointment location to be confirmed"}</p>
+              <p>{contact.confirmed ? "Check your confirmed appointment's location and saved service time before travelling." : "Service area and work-location details will appear after Edward confirms the arrangements."}</p>
+            </>}
           </article>
         </div>
       </section>
@@ -57,14 +68,14 @@ export default function Contact() {
           <div className="contact-booking">
             <p className="eyebrow">YOUR NEXT STEP</p>
             <h2 id="contact-options-heading">Ready when you are.</h2>
-            <p>Our online appointment request is the best place to start. Choose a service, share your vehicle details, and let us know your preferred time.</p>
+            <p>{mobileService ? "Email your city or ZIP code and service needs to discuss coverage and travel arrangements. You can then request a service time online and share your vehicle details." : "Our online appointment request is the best place to start. Choose a service, share your vehicle details, and let us know your preferred time."}</p>
             <ul className="contact-checklist">
               <li><Icon name="check" />Know the service? Choose it from the list.</li>
               <li><Icon name="check" />Not sure? Describe what you've noticed.</li>
               <li><Icon name="check" />Check whether your saved appointment is confirmed or awaiting review.</li>
             </ul>
             <Link className="button button-primary" to="/appointment">Request an appointment <Icon name="arrow" /></Link>
-            <p className="contact-booking-note">Confirm your appointment status and service location before travelling.</p>
+            <p className="contact-booking-note">{mobileService ? "Check your saved appointment status and agree the visit location and travel arrangements with the mechanic." : "Confirm your appointment status and service location before travelling."}</p>
           </div>
           <aside className="contact-hours" aria-labelledby="contact-hours-heading">
             <div className="contact-hours-heading"><Icon name="clock" /><span className="contact-placeholder-tag">{verified ? "Confirmed hours" : "Hours awaiting confirmation"}</span></div>

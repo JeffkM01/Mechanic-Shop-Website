@@ -16,7 +16,7 @@ export default function usePublicShopHours() {
       const data = parsePublicShopHours(await response.json());
       if (version === sequence.current && !request.signal.aborted) setEntry({ data, loading: false, error: "" });
     } catch {
-      if (version === sequence.current && !request.signal.aborted) setEntry({ data: null, loading: false, error: "Operating hours could not be verified. Please retry or contact the shop before visiting." });
+      if (version === sequence.current && !request.signal.aborted) setEntry({ data: null, loading: false, error: "Operating hours could not be verified. Please retry or contact the shop before arranging service." });
     }
   }, []);
   const cancel = useCallback(() => { sequence.current++; controller.current?.abort(); }, []);
