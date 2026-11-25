@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Icon, PageHero, BookingBanner } from "../components/CustomerUI";
+import { businessProfile } from "../../shared/businessProfile.js";
 import "../styles/AboutContact.css";
 
 const values = [
@@ -27,7 +28,7 @@ export default function About() {
         <div>
           <p className="eyebrow">THE WAY WE SEE IT</p>
           <h2 id="about-intro-heading">Your vehicle matters.<br />So does your peace of mind.</h2>
-          <p>Welcome to Ed's Auto Shop. We offer a focused range of maintenance and repair services, including oil changes, engine air filter replacement, brake repairs, AC and heating repair, and engine diagnostics.</p>
+          <p>{businessProfile.contact.mobileService ? "Ed's Auto Shop is a mobile mechanic service. We visit customers by arrangement for maintenance and repair work. Email us to discuss service coverage, the visit location, and travel arrangements before booking." : "Welcome to Ed's Auto Shop. We offer a focused range of maintenance and repair services. Explore the current services to find the right starting point for your vehicle."}</p>
           <p>Whether you know exactly what you need or just know something feels different, you can start with a simple appointment request. Tell us what you're experiencing, and we'll take it from there.</p>
           <Link className="text-link" to="/services">Explore our services <Icon name="arrow" /></Link>
         </div>

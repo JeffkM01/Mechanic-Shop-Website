@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkLaunchConfiguration, LIVE_LAUNCH_CHECKS } from "./launchChecks.js";
 import { businessProfile } from "../shared/businessProfile.js";
+import { approvedMobileBusinessProfile, draftMobileBusinessProfile } from "../tests/business-profile-fixtures.js";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const validEnv = () => ({
@@ -54,6 +55,28 @@ test("valid synthetic settings pass configuration only and retain every required
   assert.deepEqual(report.unverified, LIVE_LAUNCH_CHECKS);
   for (const code of ["DATABASE_ACCESS_UNVERIFIED", "SCHEDULING_UNVERIFIED", "EMAIL_DELIVERY_UNVERIFIED", "BACKUP_RECOVERY_UNVERIFIED", "PROXY_AND_WORKER_TOPOLOGY_UNVERIFIED"]) {
     assert.equal(report.unverified.some(item => item.code === code), true);
+  }
+});
+
+test("mobile email-only contact passes offline profile checks only after explicit complete review", () => {
+  const approved = approvedMobileBusinessProfile();
+  const report = checked({}, approved);
+  assert.equal(report.configurationReady, true);
+  assert.equal(codePasses(report, "PUBLIC_BUSINESS_PROFILE"), true);
+  assert.equal(report.readyForPublicLaunch, false);
+  assert.ok(report.unverified.some(check => check.code === "SCHEDULING_UNVERIFIED"));
+  const draft = checked({}, draftMobileBusinessProfile());
+  assert.equal(draft.configurationReady, false);
+  assert.equal(codePasses(draft, "PUBLIC_BUSINESS_PROFILE"), false);
+  const contact = draft.blockers.find(issue => issue.code === "SHOP_CONTACT_UNCONFIRMED");
+  assert.match(contact.message, /service area/);
+  assert.doesNotMatch(contact.message, /phone|address/);
+  for (const field of ["serviceArea", "visitInstructions"]) {
+    const incomplete = approvedMobileBusinessProfile();
+    incomplete.contact.mobileService[field] = null;
+    const failed = checked({}, incomplete);
+    assert.equal(failed.configurationReady, false);
+    assert.equal(failed.blockers.some(issue => issue.code === "INVALID_BUSINESS_PROFILE"), true);
   }
 });
 

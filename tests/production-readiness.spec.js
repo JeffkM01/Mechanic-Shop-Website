@@ -1,7 +1,8 @@
 import axe from "axe-core";
 import { test, expect } from "./cancellation-fixture.js";
 import { businessProfile, validateBusinessProfile } from "../shared/businessProfile.js";
-import { approvedBusinessProfile, draftBusinessProfile, emailOnlyBusinessProfile, unapprovedEmailBusinessProfile } from "./business-profile-fixtures.js";
+import { approvedBusinessProfile, draftBusinessProfile, emailOnlyBusinessProfile, unapprovedEmailBusinessProfile,
+  draftMobileBusinessProfile, approvedMobileBusinessProfile } from "./business-profile-fixtures.js";
 import { formatBookingDate } from "../src/utils/bookingDates.js";
 
 // Only the synthetic isolated Mongo/Express fixture is used. No .env, normal
@@ -13,19 +14,39 @@ const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
 const DRAFT = "Draft — awaiting Edward’s approval";
 
 async function assertContactDetails(page, profile) {
-  if (!profile.contact.confirmed) {
-    for (const value of ["Phone number to be confirmed", "Appointment location to be confirmed"]) await expect(page.getByText(value, { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Service area & location" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Visit the shop" })).toHaveCount(0);
+  const { contact } = profile;
+  const mobile = contact.mobileService;
+  await expect(page.getByText("Phone number to be confirmed", { exact: true })).toHaveCount(0);
+  if (contact.confirmed && contact.phone) {
+    await expect(page.getByRole("link", { name: contact.phone, exact: true })).toHaveAttribute("href", /^tel:\+/);
+  } else {
+    await expect(page.getByRole("heading", { name: "Give us a call", exact: true })).toHaveCount(0);
     await expect(page.locator("main a[href^='tel:']")).toHaveCount(0);
+  }
+  if (mobile) {
+    await expect(page.getByRole("heading", { name: "We come to you", exact: true })).toBeVisible();
+    await expect(page.getByText("Appointment location to be confirmed", { exact: true })).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText(/before travelling|before visiting/);
+    if (contact.confirmed) {
+      await expect(page.locator("main")).toContainText(mobile.serviceArea);
+      await expect(page.locator("main")).toContainText(mobile.visitInstructions);
+      await expect(page.getByText("Mobile service arrangements are being confirmed.", { exact: true })).toHaveCount(0);
+    } else {
+      await expect(page.getByText("Mobile service arrangements are being confirmed.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Email us to check service coverage.", { exact: true })).toBeVisible();
+      if (mobile.serviceArea) await expect(page.locator("main")).not.toContainText(mobile.serviceArea);
+    }
+  } else if (!contact.confirmed) {
+    await expect(page.getByText("Appointment location to be confirmed", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Service area & location" })).toBeVisible();
     await expect(page.getByText("Contact details are being confirmed.", { exact: true })).toBeVisible();
   } else {
-    await expect(page.getByRole("link", { name: profile.contact.phone, exact: true })).toHaveAttribute("href", /^tel:\+/);
-    for (const line of profile.contact.addressLines) await expect(page.locator("main")).toContainText(line);
+    for (const line of contact.addressLines) await expect(page.locator("main")).toContainText(line);
     await expect(page.getByText("Contact details are being confirmed.", { exact: true })).toHaveCount(0);
   }
-  if (profile.contact.confirmed || profile.contact.emailConfirmed) {
-    await expect(page.getByRole("link", { name: profile.contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(profile.contact.email)}`);
+  await expect(page.getByRole("heading", { name: "Visit the shop" })).toHaveCount(0);
+  if (contact.confirmed || contact.emailConfirmed) {
+    await expect(page.getByRole("link", { name: contact.email, exact: true })).toHaveAttribute("href", `mailto:${encodeURIComponent(contact.email)}`);
     await expect(page.getByText("Public email to be confirmed", { exact: true })).toHaveCount(0);
   } else {
     await expect(page.getByText("Public email to be confirmed", { exact: true })).toBeVisible();
@@ -112,8 +133,10 @@ async function audit(page) {
 }
 
 async function capture(page, testInfo, name) {
+  await page.evaluate(() => document.activeElement?.blur());
+  await expect(page.getByRole("link", { name: "Skip to content", exact: true })).not.toBeInViewport();
   const path = testInfo.outputPath(`${name}.png`);
-  await page.screenshot({ path, fullPage: true });
+  await page.screenshot({ path, fullPage: true, animations: "disabled" });
   await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
@@ -218,7 +241,7 @@ test("opens the configured until-start cancellation policy without inventing fee
   await expect(page.getByRole("link", { name: /reschedule/i })).toHaveCount(0);
 });
 
-for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only approved", emailOnlyBusinessProfile], ["non-null unapproved email", unapprovedEmailBusinessProfile], ["approved", approvedBusinessProfile]]) {
+for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only approved", emailOnlyBusinessProfile], ["non-null unapproved email", unapprovedEmailBusinessProfile], ["approved", approvedBusinessProfile], ["draft mobile", draftMobileBusinessProfile], ["approved email-only mobile", approvedMobileBusinessProfile]]) {
   test(`renders ${state} synthetic contact and policies through the actual public routes`, async ({ page }) => {
     const profile = fixture();
     const assertSupplied = await useSyntheticProfile(page, profile);
@@ -226,7 +249,7 @@ for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only ap
     assertSupplied();
     await assertContactDetails(page, profile);
     await assertUnconfirmedHours(page);
-    if (Object.hasOwn(profile.contact, "emailConfirmed")) await audit(page);
+    if (Object.hasOwn(profile.contact, "emailConfirmed") || profile.contact.mobileService) await audit(page);
 
     await page.locator(".site-footer").getByRole("link", { name: "Privacy information", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Privacy information", exact: true })).toBeVisible();
@@ -245,7 +268,7 @@ for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only ap
       await expect(page.locator("main a[href^='mailto:']")).toHaveCount(0);
       if (profile.contact.email) await expect(page.locator("main")).not.toContainText(profile.contact.email);
     }
-    if (Object.hasOwn(profile.contact, "emailConfirmed")) await audit(page);
+    if (Object.hasOwn(profile.contact, "emailConfirmed") || profile.contact.mobileService) await audit(page);
 
     await page.locator(".site-footer").getByRole("link", { name: "Cancellation policy", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Cancellation policy", exact: true })).toBeVisible();
@@ -255,6 +278,77 @@ for (const [state, fixture] of [["draft", draftBusinessProfile], ["email-only ap
       : "Edward must approve this policy before public launch.");
   });
 }
+
+test("withholds draft mobile coverage and visit instructions while explaining customer visits", async ({ page }, testInfo) => {
+  const profile = draftMobileBusinessProfile();
+  profile.contact.phone = "202-555-0148";
+  profile.contact.mobileService.serviceArea = "Unapproved synthetic coverage region";
+  profile.contact.mobileService.visitInstructions = "Unapproved synthetic arrival promise";
+  const assertSupplied = await useSyntheticProfile(page, profile);
+  await page.setViewportSize({ width: testInfo.project.name === "mobile" ? 320 : testInfo.project.name === "tablet" ? 768 : 1440, height: 1000 });
+  await openContact(page);
+  assertSupplied();
+  await assertContactDetails(page, profile);
+  await expect(page.locator("main")).not.toContainText(profile.contact.phone);
+  await expect(page.locator("main")).not.toContainText(profile.contact.mobileService.visitInstructions);
+  await expect(page.locator("main")).toContainText("Email your city or ZIP code and the service you need to discuss location and travel arrangements before booking.");
+  await expect(page.locator(".contact-cards > .contact-card")).toHaveCount(2);
+  await expect(page.locator(".site-footer").getByRole("heading", { name: "ARRANGE MOBILE SERVICE", exact: true })).toBeVisible();
+  await expect(page.locator(".site-footer").getByRole("link", { name: "Staff Login", exact: true })).toHaveAttribute("href", "/mechanic");
+  await audit(page);
+  await capture(page, testInfo, "draft-mobile-contact");
+  await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
+  await audit(page);
+  await capture(page, testInfo, "draft-mobile-contact-200-percent-text");
+  await page.goto("/about");
+  await expect(page.locator("main")).toContainText(/mobile mechanic/i);
+  await expect(page.locator("main")).not.toContainText(profile.contact.mobileService.serviceArea);
+  await expect(page.locator("main")).not.toContainText(profile.contact.mobileService.visitInstructions);
+});
+
+test("shows an optional approved mobile phone without requiring a storefront address", async ({ page }) => {
+  const profile = approvedMobileBusinessProfile();
+  profile.contact.phone = "202-555-0148";
+  const assertSupplied = await useSyntheticProfile(page, profile);
+  await openContact(page);
+  assertSupplied();
+  await assertContactDetails(page, profile);
+  await expect(page.locator(".contact-cards > .contact-card")).toHaveCount(3);
+  await expect(page.locator(".contact-address-line")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: profile.contact.phone, exact: true })).toHaveAttribute("href", "tel:+12025550148");
+});
+
+test("fills the email-only mobile contact layout and keeps it accessible at 320 pixels and enlarged text", async ({ page }, testInfo) => {
+  const profile = approvedMobileBusinessProfile();
+  const assertSupplied = await useSyntheticProfile(page, profile);
+  await page.setViewportSize({ width: testInfo.project.name === "mobile" ? 320 : testInfo.project.name === "tablet" ? 768 : 1440, height: 1000 });
+  await openContact(page);
+  assertSupplied();
+  await assertContactDetails(page, profile);
+  const cards = page.locator(".contact-cards > .contact-card");
+  await expect(cards).toHaveCount(2);
+  const layout = await page.locator(".contact-cards").evaluate(element => {
+    const grid = element.getBoundingClientRect();
+    const children = [...element.children].map(child => {
+      const { left, right, top, bottom, width } = child.getBoundingClientRect();
+      return { left, right, top, bottom, width };
+    });
+    return { width: grid.width, left: grid.left, right: grid.right, children };
+  });
+  if (testInfo.project.name === "desktop") {
+    expect(Math.abs(layout.children[0].top - layout.children[1].top)).toBeLessThanOrEqual(1);
+    expect(layout.children[0].width).toBeGreaterThan(layout.width * 0.45);
+    expect(Math.abs(layout.children[1].right - layout.right)).toBeLessThanOrEqual(1);
+  } else {
+    expect(layout.children[1].top).toBeGreaterThanOrEqual(layout.children[0].bottom);
+    for (const child of layout.children) expect(Math.abs(child.width - layout.width)).toBeLessThanOrEqual(1);
+  }
+  await audit(page);
+  await capture(page, testInfo, "email-only-mobile-contact");
+  await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
+  await audit(page);
+  await capture(page, testInfo, "email-only-mobile-contact-200-percent-text");
+});
 
 test("keeps contact and policy pages accessible and readable at narrow widths and 200 percent text size", async ({ page, shop }, testInfo) => {
   test.setTimeout(120_000);

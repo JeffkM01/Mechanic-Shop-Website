@@ -26,6 +26,15 @@ export function unapprovedEmailBusinessProfile() {
   return profile;
 }
 
+export function draftMobileBusinessProfile() {
+  const profile = emailOnlyBusinessProfile();
+  profile.contact.mobileService = {
+    serviceArea: null,
+    visitInstructions: "Email the synthetic shop to review location and travel before booking.",
+  };
+  return profile;
+}
+
 export function approvedBusinessProfile() {
   return {
     schemaVersion: 1,
@@ -42,4 +51,15 @@ export function approvedBusinessProfile() {
     },
     cancellation: { approved: true, effectiveDate: "2028-02-29", policy: "until_start_no_fee" },
   };
+}
+
+export function approvedMobileBusinessProfile() {
+  const profile = approvedBusinessProfile();
+  profile.contact.phone = null;
+  profile.contact.addressLines = [];
+  profile.contact.mobileService = {
+    serviceArea: "Synthetic Test District only; this is not a real service area.",
+    visitInstructions: "Email the synthetic shop to review private visit details before booking.",
+  };
+  return profile;
 }

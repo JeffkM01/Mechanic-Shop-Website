@@ -31,7 +31,7 @@ export default function Services() {
           <Icon name="chat" />
           <div>
             <h2 id="services-availability-heading">A note on availability.</h2>
-            <p>Services marked provisional are awaiting availability confirmation. Repairs and diagnostics require mechanic review. Check your appointment’s saved status before visiting.</p>
+            <p>Services marked provisional are awaiting availability confirmation. Repairs and diagnostics require mechanic review. Check your appointment’s saved status and service arrangements.</p>
           </div>
         </aside>
 

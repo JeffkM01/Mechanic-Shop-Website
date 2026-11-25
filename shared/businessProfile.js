@@ -36,7 +36,8 @@ export function validateBusinessProfile(value) {
   if (value.schemaVersion !== 1) throw new Error("Use business-profile schema version 1.");
   const name = text(value.name, 80, "Shop name", false);
   const hasEmailConfirmation = plain(value.contact) && Object.hasOwn(value.contact, "emailConfirmed");
-  keys(value.contact, ["confirmed", "phone", "email", "addressLines", ...(hasEmailConfirmation ? ["emailConfirmed"] : [])], "Public contact details");
+  const hasMobileService = plain(value.contact) && Object.hasOwn(value.contact, "mobileService");
+  keys(value.contact, ["confirmed", "phone", "email", "addressLines", ...(hasEmailConfirmation ? ["emailConfirmed"] : []), ...(hasMobileService ? ["mobileService"] : [])], "Public contact details");
   if (typeof value.contact.confirmed !== "boolean") throw new Error("Contact confirmation must be true or false.");
   if (hasEmailConfirmation && typeof value.contact.emailConfirmed !== "boolean") throw new Error("Email confirmation must be true or false.");
   const phone = text(value.contact.phone, 24, "Public phone");
@@ -48,10 +49,24 @@ export function validateBusinessProfile(value) {
   if (value.contact.emailConfirmed && !email) throw new Error("Confirm an actual public email address before marking email confirmed.");
   if (!Array.isArray(value.contact.addressLines) || value.contact.addressLines.length > 4) throw new Error("Public address may contain up to four lines.");
   const addressLines = value.contact.addressLines.map(line => text(line, 120, "Address line", false));
-  if (value.contact.confirmed && (!phone || !email || !addressLines.length)) throw new Error("Confirm actual phone, email, and address before marking contact details confirmed.");
+  let mobileService;
+  if (hasMobileService) {
+    keys(value.contact.mobileService, ["serviceArea", "visitInstructions"], "Mobile service details");
+    mobileService = {
+      serviceArea: text(value.contact.mobileService.serviceArea, 300, "Mobile service area"),
+      visitInstructions: text(value.contact.mobileService.visitInstructions, 600, "Mobile visit instructions"),
+    };
+    if (addressLines.length) throw new Error("Mobile service profiles must leave public address lines empty.");
+    if (value.contact.confirmed && (!email || !mobileService.serviceArea || !mobileService.visitInstructions)) {
+      throw new Error("Confirm the public email, service area, and visit instructions before marking mobile contact details confirmed.");
+    }
+  } else if (value.contact.confirmed && (!phone || !email || !addressLines.length)) {
+    throw new Error("Confirm actual phone, email, and address before marking contact details confirmed.");
+  }
   // Existing version-1 profiles retain their shape and aggregate approval.
   // A separately approved inbox never approves phone, location or policies.
-  const contact = { confirmed: value.contact.confirmed, ...(hasEmailConfirmation ? { emailConfirmed: value.contact.emailConfirmed } : {}), phone, email, addressLines };
+  const contact = { confirmed: value.contact.confirmed, ...(hasEmailConfirmation ? { emailConfirmed: value.contact.emailConfirmed } : {}), phone, email, addressLines,
+    ...(hasMobileService ? { mobileService } : {}) };
 
   keys(value.privacy, ["approved", "effectiveDate", "hostingProvider", "databaseProvider", "emailProvider", "retentionPolicy", "requestInstructions"], "Privacy information");
   if (typeof value.privacy.approved !== "boolean") throw new Error("Privacy approval must be true or false.");
@@ -80,7 +95,9 @@ export function businessProfileLaunchIssues(value = businessProfile) {
   catch (error) { return [{ code: "INVALID_BUSINESS_PROFILE", message: error.message }]; }
   const issues = [];
   const add = (condition, code, message) => { if (condition) issues.push({ code, message }); };
-  add(!profile.contact.confirmed, "SHOP_CONTACT_UNCONFIRMED", "Confirm the shop's real public phone, email, and address.");
+  add(!profile.contact.confirmed, "SHOP_CONTACT_UNCONFIRMED", profile.contact.mobileService
+    ? "Confirm the mobile service's public email, service area, and visit instructions."
+    : "Confirm the shop's real public phone, email, and address.");
   add(!profile.privacy.approved, "PRIVACY_NOTICE_UNAPPROVED", "Edward must review and approve the public privacy information.");
   for (const [field, label] of [["effectiveDate", "effective date"], ["hostingProvider", "hosting provider"], ["databaseProvider", "database provider"], ["emailProvider", "email provider"], ["retentionPolicy", "data-retention policy"], ["requestInstructions", "data-request process"]]) {
     add(profile.privacy[field] === null, `PRIVACY_${field.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}_UNCONFIRMED`, `Confirm the privacy notice's ${label}.`);
