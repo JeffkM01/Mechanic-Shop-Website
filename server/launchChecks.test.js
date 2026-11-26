@@ -7,8 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkLaunchConfiguration, LIVE_LAUNCH_CHECKS } from "./launchChecks.js";
-import { businessProfile } from "../shared/businessProfile.js";
-import { approvedMobileBusinessProfile, draftMobileBusinessProfile } from "../tests/business-profile-fixtures.js";
+import { approvedMobileBusinessProfile, draftBusinessProfile, draftMobileBusinessProfile } from "../tests/business-profile-fixtures.js";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const validEnv = () => ({
@@ -35,7 +34,7 @@ const checked = (patch = {}, profile = approvedProfile()) => checkLaunchConfigur
 const codePasses = (report, code) => report.checks.find(item => item.code === code)?.ok;
 
 test("unknown business facts and absent production settings block configuration without approving launch", () => {
-  const report = checkLaunchConfiguration({ env: {}, profile: businessProfile });
+  const report = checkLaunchConfiguration({ env: {}, profile: draftBusinessProfile() });
   assert.equal(report.configurationReady, false);
   assert.equal(report.readyForPublicLaunch, false);
   assert.equal(report.networkAccessed, false);

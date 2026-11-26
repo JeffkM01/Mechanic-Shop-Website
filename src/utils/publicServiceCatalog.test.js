@@ -26,6 +26,29 @@ test("an intentionally empty current catalog stays empty rather than restoring s
   assert.deepEqual(parsePublicServiceCatalog({ revision: 8, services: [] }), { revision: 8, services: [] });
 });
 
+test("mobile booking rules are validated independently and do not retain the response object", () => {
+  const input = { ...response(), mobileBooking: { travelBufferMinutes: 75, requiresMechanicApproval: true } };
+  const parsed = parsePublicServiceCatalog(input);
+  assert.deepEqual(parsed.mobileBooking, input.mobileBooking);
+  assert.notEqual(parsed.mobileBooking, input.mobileBooking);
+  assert.equal(Object.isFrozen(parsed.mobileBooking), true);
+  input.mobileBooking.travelBufferMinutes = 5;
+  assert.equal(parsed.mobileBooking.travelBufferMinutes, 75);
+  assert.deepEqual(parsePublicServiceCatalog({ ...response(), mobileBooking: null }).mobileBooking, null);
+  assert.equal(Object.hasOwn(parsePublicServiceCatalog(response()), "mobileBooking"), false);
+});
+
+test("malformed mobile policy cannot silently downgrade a mobile booking to ordinary booking", () => {
+  for (const mobileBooking of [undefined, [], "mobile", {}, { travelBufferMinutes: 75 },
+    { travelBufferMinutes: 75, requiresMechanicApproval: false },
+    { travelBufferMinutes: "75", requiresMechanicApproval: true },
+    { travelBufferMinutes: -1, requiresMechanicApproval: true },
+    { travelBufferMinutes: 121, requiresMechanicApproval: true },
+    { travelBufferMinutes: 75, requiresMechanicApproval: true, privateAddress: "Do not render this value" }]) {
+    assert.throws(() => parsePublicServiceCatalog({ ...response(), mobileBooking }), /mobile booking rules could not be verified/);
+  }
+});
+
 test("missing, malformed and unsafe catalog revisions fail verification", () => {
   for (const invalid of [null, undefined, [], {}, "services", { services: SERVICES }, { revision: 1, services: null }, { revision: 1, services: {} }]) {
     assert.throws(() => parsePublicServiceCatalog(invalid), /could not be verified/);

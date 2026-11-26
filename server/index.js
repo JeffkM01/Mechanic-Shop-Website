@@ -18,6 +18,8 @@ import { startupFailureMessage } from "./startupDiagnostics.js";
 import { createEmailConnectionTest } from "./emailConnectionTest.js";
 import { readAppointmentEmailTestConfiguration } from "./appointmentEmailTest.js";
 import { OWNED_EMAIL_TEST_RECIPIENT } from "./appointmentEmailScope.js";
+import { businessProfile } from "../shared/businessProfile.js";
+import { DEFAULT_MOBILE_BOOKING_POLICY } from "../shared/mobileBooking.js";
 
 // Resolve the private development file independently of the shell's working
 // directory. Explicit host environment values always take precedence.
@@ -52,7 +54,8 @@ try {
   startupPhase = "CUSTOMER_MANAGEMENT";
   const management = createCustomerManagement({ Appointment, env: notificationEnv, deliveryScope });
   startupPhase = "SCHEDULING_SETTINGS";
-  const scheduling = createSchedulingService({ Appointment, SchedulingState, management, deliveryScope });
+  const scheduling = createSchedulingService({ Appointment, SchedulingState, management, deliveryScope,
+    mobileBookingPolicy: businessProfile.contact.mobileService ? DEFAULT_MOBILE_BOOKING_POLICY : null });
   await scheduling.getSettings(); // Preserve the existing compatible seed/CAS path.
   // Default staging keeps the dispatcher disabled. Explicit workflow tests
   // receive a locked HTTPS environment and active-run scope; old requests are

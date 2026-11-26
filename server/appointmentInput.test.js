@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { prepareAppointment } from "./appointmentInput.js";
+import { DEFAULT_MOBILE_BOOKING_POLICY } from "../shared/mobileBooking.js";
 
 const now = new Date(2026, 10, 3, 9, 0);
 const good = {
@@ -140,4 +141,32 @@ test("server rejects recipient-list or display-name syntax and malformed email e
     assert.equal(result.fields.email, "Please enter a valid email address.", email);
     assert.equal(result.value, undefined, email);
   }
+});
+
+test("mobile input requires every private location field and returns core and location corrections together", () => {
+  const body = { ...good, name: "", city: "", state: "NY", postalCode: "invalid" };
+  const before = structuredClone(body);
+  const result = prepareAppointment(body, now, { mobileBookingPolicy: DEFAULT_MOBILE_BOOKING_POLICY });
+  assert.deepEqual(Object.keys(result.fields), ["name", "city", "state", "postalCode"]);
+  assert.equal(result.value, undefined);
+  assert.deepEqual(body, before);
+  assert.equal(JSON.stringify(result).includes(good.notes), false);
+});
+
+test("mobile input normalizes only expected location text and never accepts forged review or policy data", () => {
+  const result = prepareAppointment({ ...good, city: " Synthetic City ", state: " mo ", postalCode: " 63301-1234 ",
+    mobileVisit: { reviewedAt: "2030-01-01", travelBufferMinutes: 0 }, mobileReview: { locationConfirmed: true },
+    mobileBookingPolicy: null, status: "confirmed" }, now, { mobileBookingPolicy: DEFAULT_MOBILE_BOOKING_POLICY });
+  assert.equal(result.error, undefined);
+  assert.equal(result.value.city, "Synthetic City");
+  assert.equal(result.value.state, "MO");
+  assert.equal(result.value.postalCode, "63301-1234");
+  for (const field of ["mobileVisit", "mobileReview", "mobileBookingPolicy", "status"]) assert.equal(Object.hasOwn(result.value, field), false);
+});
+
+test("ordinary input does not backfill or retain mobile metadata", () => {
+  const result = prepareAppointment({ ...good, city: "Synthetic City", state: "MO", postalCode: "63301",
+    mobileVisit: { reviewedAt: "2030-01-01" } }, now);
+  assert.equal(result.error, undefined);
+  for (const field of ["city", "state", "postalCode", "mobileVisit"]) assert.equal(Object.hasOwn(result.value, field), false);
 });

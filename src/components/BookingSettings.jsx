@@ -17,7 +17,7 @@ function numericValue(event) {
   return event.target.value === "" ? "" : Number(event.target.value);
 }
 
-export default function BookingSettings({ draft, onChange, disabled }) {
+export default function BookingSettings({ draft, onChange, disabled, mobileBooking = null }) {
   const id = useId();
   const [confirmAutomation, setConfirmAutomation] = useState(false);
   const verified = draft.businessHoursVerified && draft.capacityVerified;
@@ -27,11 +27,18 @@ export default function BookingSettings({ draft, onChange, disabled }) {
     onChange({ serviceRules: { ...draft.serviceRules, [name]: { ...draft.serviceRules[name], ...patch } } });
   }
   function requestAutomation(enabled) {
+    if (mobileBooking) return;
     if (!enabled) { onChange({ automaticBookingEnabled: false }); setConfirmAutomation(false); }
     else setConfirmAutomation(true);
   }
 
   return <div className="staff-settings-sections">
+    {mobileBooking && <section className="staff-settings-card staff-mobile-policy" aria-labelledby="staff-mobile-policy-heading">
+      <div className="staff-settings-heading"><p className="staff-kicker">PLAN THE VISIT AND THE JOURNEY</p><h2 id="staff-mobile-policy-heading">Mobile booking review</h2></div>
+      <p>Every new mobile request requires mechanic approval, including Wiper Blade Replacement. Confirm coverage, arrange the visit address privately, and review the route between customers before approving.</p>
+      <p>The mobile travel minimum is {mobileBooking.travelBufferMinutes} minutes after the service. With the buffer in this draft, new mobile visits reserve at least {Math.max(mobileBooking.travelBufferMinutes, Number(draft.bufferMinutes) || 0)} minutes. A lower saved buffer does not reduce the mobile minimum; a higher buffer remains protected.</p>
+      <p className="staff-settings-note">Saved automation and service eligibility are retained. They do not automatically confirm new mobile requests. Existing appointments retain their original booked duration and buffer; changing the new-booking policy does not rewrite those visits. Driving time and coverage are reviewed manually.</p>
+    </section>}
     <ServiceCatalogEditor draft={draft} onChange={onChange} disabled={disabled} />
     <section className="staff-settings-card" aria-labelledby="staff-policy-heading">
       <div className="staff-settings-heading"><p className="staff-kicker">SPACE FOR THE WORK</p><h2 id="staff-policy-heading">Capacity & booking policies</h2><p>These values are loaded from the saved shop configuration. Changes can affect the dates and times customers see.</p></div>
@@ -57,7 +64,8 @@ export default function BookingSettings({ draft, onChange, disabled }) {
           return <article className="staff-service-rule" key={service.name}>
             <div className="staff-service-rule-heading"><h3>{service.name}</h3>{service.active === false && <span className="staff-badge staff-badge-neutral">Inactive</span>}{service.provisional && <span className="staff-badge staff-badge-provisional">Provisional</span>}</div>
             <label className="staff-field"><span>Estimated duration (minutes)</span><input type="number" aria-label={`${service.name} duration (minutes)`} min="5" max="720" step="1" value={rule.durationMinutes} onChange={event => changeRule(service.name, { durationMinutes: numericValue(event) })} required /><span className="staff-field-help">Booking estimate · 5–720 minutes</span></label>
-            {manualOnly ? <p className="staff-approval-policy"><strong>Mechanic approval required.</strong> {category.id === "repairs" ? "Repairs & Diagnostics always require Edward’s approval." : "Edward requires approval for this service. Only Wiper Blade Replacement is eligible for automatic confirmation."}</p>
+            {mobileBooking ? <p className="staff-approval-policy"><strong>Mobile visit approval required.</strong> Service coverage, the visit location, and travel must be reviewed before confirmation.</p>
+              : manualOnly ? <p className="staff-approval-policy"><strong>Mechanic approval required.</strong> {category.id === "repairs" ? "Repairs & Diagnostics always require Edward’s approval." : "Edward requires approval for this service. Only Wiper Blade Replacement is eligible for automatic confirmation."}</p>
               : <><label className="staff-check"><input type="checkbox" aria-label={`${service.name} requires mechanic approval`} checked={rule.requiresApproval} onChange={event => changeRule(service.name, { requiresApproval: event.target.checked })} /><span>Require mechanic approval</span></label><p className="staff-field-help">Turning this off only makes the service eligible when automatic booking is explicitly enabled and all other safeguards are satisfied.</p></>}
           </article>;
         })}</div>
@@ -66,19 +74,20 @@ export default function BookingSettings({ draft, onChange, disabled }) {
 
     <section className="staff-settings-card" aria-labelledby="staff-automation-heading">
       <div className="staff-settings-heading"><p className="staff-kicker">YOU STAY IN CONTROL</p><h2 id="staff-automation-heading">Verification & automatic booking</h2><p>Automatic booking is disabled by default. Opening or saving this page never verifies business information or enables automation on its own.</p></div>
-      <div className="staff-automation-status"><span>Automatic booking in this configuration</span><strong className={`staff-badge ${draft.automaticBookingEnabled ? "staff-badge-active" : "staff-badge-neutral"}`}>{draft.automaticBookingEnabled ? "Enabled" : "Disabled"}</strong></div>
+      <div className="staff-automation-status"><span>{mobileBooking ? "Retained automatic booking setting" : "Automatic booking in this configuration"}</span><strong className={`staff-badge ${draft.automaticBookingEnabled ? "staff-badge-active" : "staff-badge-neutral"}`}>{draft.automaticBookingEnabled ? "Enabled" : "Disabled"}</strong></div>
+      {mobileBooking && <p className="staff-settings-warning">New mobile requests remain pending regardless of this retained setting. Automatic confirmation is unavailable while mobile coverage and travel require mechanic review.</p>}
       <fieldset className="staff-verification-fields" disabled={disabled}>
         <legend className="staff-sr-only">Explicit business verification</legend>
         <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Business hours verified" aria-describedby={`${id}-hours-ack`} checked={draft.businessHoursVerified} onChange={event => onChange({ businessHoursVerified: event.target.checked })} /><span><strong>Business hours verified</strong><span id={`${id}-hours-ack`}>I have personally confirmed that the displayed timezone, weekly hours, and recurring shop-wide breaks reflect the real shop schedule. This is my acknowledgment, not an automatic check.</span></span></label>
         <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Capacity verified" aria-describedby={`${id}-capacity-ack`} checked={draft.capacityVerified} onChange={event => onChange({ capacityVerified: event.target.checked })} /><span><strong>Capacity verified</strong><span id={`${id}-capacity-ack`}>I have personally confirmed that the simultaneous appointment capacity reflects the staff and equipment actually available.</span></span></label>
-        <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Automatic booking enabled" checked={draft.automaticBookingEnabled} disabled={!draft.automaticBookingEnabled && !verified} onChange={event => requestAutomation(event.target.checked)} /><span><strong>Automatic booking enabled</strong><span>Only eligible Wiper Blade Replacement requests may be confirmed automatically, after both verification acknowledgments, explicit enablement, an available slot, and the daily automatic limit check.</span></span></label>
+        <label className="staff-check staff-check-detailed"><input type="checkbox" aria-label="Automatic booking enabled" checked={draft.automaticBookingEnabled} disabled={Boolean(mobileBooking) || (!draft.automaticBookingEnabled && !verified)} onChange={event => requestAutomation(event.target.checked)} /><span><strong>{mobileBooking ? "Retained automatic booking setting" : "Automatic booking enabled"}</strong><span>{mobileBooking ? "This saved value is retained for future configuration. All new mobile requests currently require explicit mechanic location and travel review." : "Only eligible Wiper Blade Replacement requests may be confirmed automatically, after both verification acknowledgments, explicit enablement, an available slot, and the daily automatic limit check."}</span></span></label>
       </fieldset>
       {!verified && <p className="staff-settings-warning">Automatic booking cannot be enabled until Edward explicitly verifies both the hours and capacity. Requests remain pending whenever either verification is missing.</p>}
-      {confirmAutomation && !draft.automaticBookingEnabled && <section className="staff-inline-confirm" role="group" aria-labelledby="staff-enable-automation-heading">
+      {confirmAutomation && !draft.automaticBookingEnabled && !mobileBooking && <section className="staff-inline-confirm" role="group" aria-labelledby="staff-enable-automation-heading">
         <h3 id="staff-enable-automation-heading">Enable automatic booking?</h3><p>After you save, the backend may automatically confirm eligible Wiper Blade Replacement requests against verified hours and capacity. All other services still require approval. Daily limits and atomic conflict checks still apply.</p><p>This changes the draft only. Review the configuration and choose Save Changes to apply it.</p>
         <div className="staff-inline-actions"><button type="button" className="staff-button staff-button-primary" disabled={disabled || !verified} onClick={() => { onChange({ automaticBookingEnabled: true }); setConfirmAutomation(false); }}>Enable automatic booking</button><button type="button" className="staff-button staff-button-secondary" disabled={disabled} onClick={() => setConfirmAutomation(false)}>Keep automatic booking off</button></div>
       </section>}
-      <p className="staff-settings-note">Oil Change, Cabin Air Filter Replacement, Suspension Repair, and all services other than eligible Wiper Blade Replacement require mechanic approval. The backend alone decides each saved appointment’s status.</p>
+      <p className="staff-settings-note">{mobileBooking ? "All new mobile requests require mechanic approval. The backend rechecks reserved time and any travel-buffer extension before saving a confirmation." : "Oil Change, Cabin Air Filter Replacement, Suspension Repair, and all services other than eligible Wiper Blade Replacement require mechanic approval. The backend alone decides each saved appointment’s status."}</p>
     </section>
   </div>;
 }

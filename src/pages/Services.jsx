@@ -32,6 +32,7 @@ export default function Services() {
           <div>
             <h2 id="services-availability-heading">A note on availability.</h2>
             <p>Services marked provisional are awaiting availability confirmation. Repairs and diagnostics require mechanic review. Check your appointment’s saved status and service arrangements.</p>
+            {catalog.mobileBooking && <p>Every mobile request, including Wiper Blade Replacement, requires mechanic review of coverage, the visit location, and travel before confirmation.</p>}
           </div>
         </aside>
 

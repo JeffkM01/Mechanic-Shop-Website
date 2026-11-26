@@ -112,7 +112,7 @@ export async function createEmailNotifications({ Appointment, env = process.env,
             // cancellation may have been saved since it was read, or even
             // while the preceding email was in flight. Read current intent
             // before every kind; management verifiers remain private here.
-            appointment = await Appointment.findById(queued._id).select("+management +notificationRetry +notificationTestRunId").lean();
+            appointment = await Appointment.findById(queued._id).select("+management +notificationRetry +notificationTestRunId +mobileVisit").lean();
             if (!isEnabledFor(appointment)) continue;
             const automaticConfirmation = appointment.status === "confirmed" && appointment.scheduling?.confirmationSource === "automatic";
             const suppress = appointment.status === "cancelled" ? ["requestCustomer", "decisionCustomer"]

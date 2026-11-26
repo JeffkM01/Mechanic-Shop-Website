@@ -68,6 +68,14 @@
 .booking-picked .text-link { min-height: 44px; border: 0; background: transparent; color: #943c15; cursor: pointer; }
 .booking-page .booking-details-hint { color: var(--muted); font-size: var(--text-secondary); margin: -8px 0 22px; }
 .booking-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; }
+.booking-mobile-location { min-width: 0; border-top: 1px solid #e0e5e7; padding-top: 22px; }
+.booking-mobile-location h3 { margin: 0 0 12px; font-size: var(--text-label); line-height: 1.45; }
+.booking-mobile-location > p { margin: 0 0 20px; color: var(--muted); font-size: var(--text-secondary); line-height: 1.7; }
+.booking-mobile-location-fields { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.booking-mobile-notice { min-width: 0; margin: 28px 0; padding: 22px 24px; border: 1px solid #f0d2ba; border-left: 4px solid #b34c1d; border-radius: 6px; background: #fff6ed; color: #593b28; overflow-wrap: anywhere; }
+.booking-mobile-notice h2 { margin: 0 0 14px; font-size: 1.25rem; line-height: 1.4; }
+.booking-page .booking-mobile-notice p { margin: 0 0 12px; font-size: var(--text-base); line-height: 1.7; }
+.booking-page .booking-mobile-notice p:last-child { margin-bottom: 0; }
 .booking-wide { grid-column: 1 / -1; }
 .booking-review-action { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; align-items: center; margin-top: 26px; padding-top: 22px; border-top: 1px solid #e8ebeb; }
 .booking-page .booking-review-action p { margin: 0; color: var(--muted); font-size: var(--text-secondary); }
@@ -128,6 +136,8 @@
   .booking-policy-strip { display: grid; gap: 7px;  font-size: var(--text-secondary); }
   .booking-page .booking-policy-strip p { margin-left: 0;  font-size: var(--text-secondary); }
   .booking-details-grid { grid-template-columns: 1fr; gap: 18px; }
+  .booking-mobile-location-fields { grid-template-columns: 1fr; gap: 18px; }
+  .booking-mobile-notice { padding: 20px; }
   .booking-review-action { align-items: stretch; gap: 14px; }
   .booking-review-action .button, .booking-actions .button { width: 100%; }
   .booking-summary { grid-template-columns: 1fr; margin-block: 20px; }

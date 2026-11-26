@@ -2,10 +2,34 @@ import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../sr
 import { DECLINE_NEXT_STEPS } from "../shared/declineReasons.js";
 import { fieldLimits, isValidEmailAddress } from "../shared/appointmentFields.js";
 import { CUSTOMER_CANCELLATION_REASONS, MECHANIC_CANCELLATION_REASONS } from "../shared/cancellations.js";
+import { prepareMobileLocation } from "../shared/mobileBooking.js";
 
 // Staff/customer text is placed only in a plain-text body, never HTML or
 // headers. Subjects are fixed, and replies use the configured shop inbox.
 export const EMAIL_KINDS = ["requestCustomer", "requestMechanic", "decisionCustomer", "cancellationCustomer", "cancellationMechanic"];
+
+function mobileEmailDetails(appointment) {
+  if (appointment.mobileVisit === undefined) return { details: "", review: "" };
+  const prepared = prepareMobileLocation(appointment.mobileVisit);
+  const buffer = appointment.scheduling?.bufferMinutes ?? appointment.mobileVisit?.travelBufferMinutes;
+  if (prepared.error || !prepared.value || !Number.isInteger(buffer) || buffer < 0 || buffer > 120) {
+    throw new Error("Mobile notification details need review before email can be sent.");
+  }
+  const { city, state, postalCode } = prepared.value;
+  const details = `\nMobile service location: ${city}, ${state} ${postalCode}\nRecorded travel planning allowance after service: ${buffer} minutes (a scheduling estimate, not a price or guaranteed arrival time).`;
+  let review = "";
+  if (appointment.status === "pending") {
+    review = "\nThis mobile request requires mechanic review of coverage, visit location, and travel before confirmation. The full service address is arranged privately.";
+  } else if (appointment.status === "confirmed") {
+    const visit = appointment.mobileVisit;
+    const reviewed = visit.locationConfirmed === true && visit.travelConfirmed === true
+      && visit.reviewedAt != null && Number.isFinite(+new Date(visit.reviewedAt));
+    review = reviewed
+      ? "\nThe mechanic recorded a coverage and travel review for this mobile visit. Check the agreed visit details before the appointment."
+      : "\nCheck the visit location and travel arrangements with the mechanic before the appointment.";
+  }
+  return { details, review };
+}
 
 export function buildEmail(kind, appointment, { from, mechanicEmail, managementLink = null }) {
   // Older stored values may predate the single-mailbox booking validator.
@@ -25,7 +49,8 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
   const holdExpiry = formatShopTimestamp(appointment.scheduling?.holdExpiresAt, timezone);
   const holdNote = appointment.status === "pending" && holdExpiry
     ? `\nThe provisional time reservation expires at ${holdExpiry} (${timezone}). Your request remains on file after expiry, but availability must be checked again before approval.` : "";
-  const details = `Reference: ${id}\nCustomer: ${appointment.name}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nRequested time: ${date} at ${time} (${timezone})${estimate}${holdNote}`;
+  const mobile = mobileEmailDetails(appointment);
+  const details = `Reference: ${id}\nCustomer: ${appointment.name}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nRequested time: ${date} at ${time} (${timezone})${estimate}${mobile.details}${holdNote}${mobile.review}`;
   const managementNote = managementLink
     ? `Manage this appointment securely: ${managementLink}\nKeep this private link to yourself. It authorizes access to this appointment.`
     : "To manage this appointment, please contact the shop by replying to this email. A secure online management link is not available in this message.";
@@ -108,7 +133,7 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
     const originalTime = formatBookingTime(cancellation.originalTime || appointment.time) || "Time needs review";
     const originalTimezone = cancellation.timezone || timezone;
     const cancelledAt = formatShopTimestamp(cancellation.cancelledAt, originalTimezone);
-    const cancellationDetails = `Reference: ${id}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nOriginal appointment: ${originalDate} at ${originalTime} (${originalTimezone})${cancelledAt ? `\nCancelled at: ${cancelledAt} (${originalTimezone})` : ""}\nCancelled by: ${cancellation.by === "customer" ? "Customer" : "Mechanic"}`;
+    const cancellationDetails = `Reference: ${id}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nOriginal appointment: ${originalDate} at ${originalTime} (${originalTimezone})${mobile.details}${cancelledAt ? `\nCancelled at: ${cancelledAt} (${originalTimezone})` : ""}\nCancelled by: ${cancellation.by === "customer" ? "Customer" : "Mechanic"}`;
     const categoryLabel = (cancellation.by === "mechanic" ? MECHANIC_CANCELLATION_REASONS : CUSTOMER_CANCELLATION_REASONS)
       .find(item => item.id === cancellation.category)?.label;
     const reason = cancellation.by === "mechanic"

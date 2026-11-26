@@ -56,6 +56,7 @@ export default function ServiceCatalogProvider({ children }) {
   const ready = loaded && !entry.loading && !entry.error;
   const value = useMemo(() => ({
     services: ready ? entry.services : [],
+    mobileBooking: ready ? entry.mobileBooking ?? null : null,
     revision: entry.revision,
     loaded,
     ready,

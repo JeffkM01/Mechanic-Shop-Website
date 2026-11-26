@@ -1,4 +1,5 @@
 import { validateServiceCatalog } from "../../shared/serviceCatalog.js";
+import { validateMobileBookingPolicy } from "../../shared/mobileBooking.js";
 
 // A catalog outage must not silently restore old services or allow a stale
 // offering to become a new booking choice.
@@ -9,5 +10,12 @@ export function parsePublicServiceCatalog(value) {
   }
   const services = value.services.length ? validateServiceCatalog(value.services) : [];
   if (services.some(service => !service.active)) throw new Error("Current services could not be verified. Please retry.");
-  return { revision: value.revision, services };
+  let mobileBooking;
+  if (Object.hasOwn(value, "mobileBooking")) {
+    try {
+      if (value.mobileBooking === undefined) throw new Error();
+      mobileBooking = validateMobileBookingPolicy(value.mobileBooking);
+    } catch { throw new Error("Current mobile booking rules could not be verified. Please retry."); }
+  }
+  return { revision: value.revision, services, ...(Object.hasOwn(value, "mobileBooking") ? { mobileBooking } : {}) };
 }

@@ -10,12 +10,17 @@ import AppointmentEmailTestNotice from "../components/AppointmentEmailTestNotice
 import useAppointmentEmailTest from "../hooks/useAppointmentEmailTest";
 import { formatBookingDate, formatBookingTime, formatShopTimestamp } from "../utils/bookingDates";
 import { fieldLimits, validateAppointmentFields } from "../utils/appointmentValidation";
+import { MOBILE_LOCATION_LIMITS, prepareMobileLocation } from "../../shared/mobileBooking.js";
 import "../styles/Appointment.css";
 
-const emptyDetails = { name: "", email: "", phone: "", vehicle: "", notes: "" };
+const emptyDetails = { name: "", email: "", phone: "", vehicle: "", city: "", state: "", postalCode: "", notes: "" };
+const mobileFieldNames = ["city", "state", "postalCode"];
 const stepLabels = ["Choose a service", "Find your time", "Your details", "Review & send"];
-const fieldOrder = ["service", "date", "time", "name", "email", "phone", "vehicle", "notes"];
-const fieldLabels = { service: "Service", date: "Appointment date", time: "Appointment time", name: "Full name", email: "Email address", phone: "Phone number", vehicle: "Vehicle information", notes: "Additional notes" };
+const fieldOrder = ["service", "date", "time", "name", "email", "phone", "vehicle", ...mobileFieldNames, "notes"];
+const fieldLabels = { service: "Service", date: "Appointment date", time: "Appointment time", name: "Full name", email: "Email address", phone: "Phone number", vehicle: "Vehicle information", city: "Service city", state: "Service state", postalCode: "Service ZIP code", notes: "Additional notes" };
+const mobilePolicyKey = policy => policy ? `${policy.travelBufferMinutes}:mechanic-review` : "ordinary";
+const travelAllowance = (policy, data) => policy ? Math.max(policy.travelBufferMinutes,
+  Number.isInteger(data?.policy?.bufferMinutes) ? data.policy.bufferMinutes : 0) : null;
 
 function FieldError({ name, message }) {
   return message ? <p className="booking-field-error" id={`booking-${name}-error`} aria-live="polite" aria-atomic="true">{message}</p> : null;
@@ -30,15 +35,17 @@ function readableAvailabilityError(message) {
 function CustomerField({ name, value, error, onChange, onBlur, inputRef, readOnly = false }) {
   const properties = {
     id: `booking-${name}`, name, value, onChange, onBlur, ref: inputRef,
-    maxLength: fieldLimits[name], required: name !== "notes", readOnly,
+    maxLength: fieldLimits[name] ?? MOBILE_LOCATION_LIMITS[name], required: name !== "notes", readOnly,
     "aria-invalid": Boolean(error) || undefined,
-    "aria-describedby": [name === "phone" && "booking-phone-help", readOnly && "booking-email-test-help", error && `booking-${name}-error`].filter(Boolean).join(" ") || undefined,
+    "aria-describedby": [name === "phone" && "booking-phone-help", mobileFieldNames.includes(name) && "booking-mobile-location-help", readOnly && "booking-email-test-help", error && `booking-${name}-error`].filter(Boolean).join(" ") || undefined,
   };
   return <div className={`booking-field${name === "notes" ? " booking-wide" : ""}`}>
     <label htmlFor={`booking-${name}`}>{fieldLabels[name]}{name === "notes" ? " (optional)" : ""}</label>
-    {name === "notes" ? <textarea {...properties} rows={3} placeholder="Tell us what you’ve noticed or anything else we should know." />
+    {name === "state" ? <select {...properties} autoComplete="address-level1"><option value="">Choose a state</option><option value="MO">Missouri</option><option value="IL">Illinois</option></select>
+      : name === "notes" ? <textarea {...properties} rows={3} placeholder="Tell us what you’ve noticed or anything else we should know." />
       : <input {...properties} type={name === "email" ? "email" : name === "phone" ? "tel" : "text"}
-        autoComplete={readOnly ? "off" : { name: "name", email: "email", phone: "tel" }[name]}
+        autoComplete={readOnly ? "off" : { name: "name", email: "email", phone: "tel", city: "address-level2", postalCode: "postal-code" }[name]}
+        inputMode={name === "postalCode" ? "text" : undefined}
         placeholder={name === "phone" ? "(636) 555-1234" : name === "vehicle" ? "Year, make, and model" : undefined} />}
     {name === "phone" && <p className="booking-field-help" id="booking-phone-help">U.S. number, such as (636) 555-1234. An optional +1 country prefix is accepted.</p>}
     {readOnly && <p className="booking-field-help" id="booking-email-test-help">This private test uses the verified test inbox shown above.</p>}
@@ -81,6 +88,10 @@ function Summary({ request }) {
     <div><dt>Booking estimate</dt><dd>{request.durationMinutes} minutes<span className="booking-summary-note">Not a guaranteed repair completion time.</span></dd></div>
     <div><dt>Customer</dt><dd>{request.name}<br />{request.email}<br />{request.phone}</dd></div>
     <div><dt>Vehicle</dt><dd>{request.vehicle}</dd></div>
+    {request.mobileBooking && <>
+      <div><dt>Service area</dt><dd>{request.city}, {request.state} {request.postalCode}<span className="booking-summary-note">Coverage and the visit location require mechanic review.</span></dd></div>
+      <div><dt>Travel allowance</dt><dd>{request.travelBufferMinutes} minutes reserved after service<span className="booking-summary-note">Planning allowance, separate from the service estimate. It does not set a fee or guarantee driving time.</span></dd></div>
+    </>}
     {request.notes.trim() && <div><dt>Additional notes</dt><dd>{request.notes}</dd></div>}
   </dl>;
 }
@@ -112,6 +123,8 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
   const errorSummary = useRef(null);
   const fieldElements = useRef({});
   const touched = useRef(new Set());
+  const mobileBooking = catalog.mobileBooking;
+  const catalogSnapshot = useRef({ ready: catalog.ready, policyKey: mobilePolicyKey(mobileBooking) });
   const service = getService(selection.service, catalog.services);
   const availability = useBookingAvailability(service?.name || "", selection.date);
   const metadata = availability.dayData || availability.calendarData;
@@ -120,6 +133,9 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
   const currentStep = preview ? 4 : slot ? 3 : service ? 2 : 1;
 
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  useEffect(() => {
+    catalogSnapshot.current = { ready: catalog.ready, policyKey: mobilePolicyKey(mobileBooking) };
+  }, [catalog.ready, mobileBooking]);
   useEffect(() => { if (preview) reviewHeading.current?.focus({ preventScroll: false }); }, [preview]);
   useEffect(() => { if (saved) successHeading.current?.focus({ preventScroll: false }); }, [saved]);
   useEffect(() => { if (error) errorBox.current?.focus({ preventScroll: false }); }, [error]);
@@ -129,7 +145,8 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
   }, [focusRequest]);
 
   function validate(values = { ...details, ...selection }) {
-    return validateAppointmentFields(values, new Date(), { schedulingAuthoritative: true, serviceCatalog: catalog.services });
+    return { ...validateAppointmentFields(values, new Date(), { schedulingAuthoritative: true, serviceCatalog: catalog.services }),
+      ...(mobileBooking ? prepareMobileLocation(values).fields : {}) };
   }
   function validateField(name) {
     touched.current.add(name);
@@ -213,13 +230,21 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
     if (Object.keys(errors).length) { showValidation(errors); return; }
     setFieldErrors({}); setSubmissionAnnouncement("");
     const token = version.current;
+    const reviewedPolicyKey = mobilePolicyKey(mobileBooking);
     busy.current = true; setChecking(true); setError("");
     try {
       const fresh = await availability.refreshDay();
       if (!active.current || token !== version.current || !fresh) return;
+      if (!catalogSnapshot.current.ready || catalogSnapshot.current.policyKey !== reviewedPolicyKey) {
+        setError("The mobile booking rules changed. Review the current services and your details again before sending.");
+        return;
+      }
       const freshSlot = fresh.slots.find(item => item.time === selection.time);
       if (!freshSlot) { recoverConflict(); return; }
-      setPreview({ ...details, ...selection, provisional: Boolean(service?.provisional), timezone: fresh.timezone, durationMinutes: fresh.durationMinutes, startAt: freshSlot.startAt, endAt: freshSlot.endAt });
+      const location = mobileBooking ? prepareMobileLocation(details).value : {};
+      setPreview({ ...details, ...location, ...selection, mobileBooking, mobilePolicyKey: reviewedPolicyKey,
+        travelBufferMinutes: travelAllowance(mobileBooking, fresh), provisional: Boolean(service?.provisional),
+        timezone: fresh.timezone, durationMinutes: fresh.durationMinutes, startAt: freshSlot.startAt, endAt: freshSlot.endAt });
     } catch (failure) {
       if (active.current && token === version.current) setError(readableAvailabilityError(failure.message) || "We could not recheck this time. Please retry availability.");
     } finally { busy.current = false; if (active.current) setChecking(false); }
@@ -233,6 +258,11 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
       return;
     }
     if (!catalog.ready) { setError("Current services must be verified before sending a request. Retry services; your details are still here."); return; }
+    if (preview.mobilePolicyKey !== mobilePolicyKey(mobileBooking)) {
+      setPreview(null);
+      setError("The mobile booking rules changed. Review your location and travel allowance again before sending.");
+      return;
+    }
     const errors = validate();
     if (Object.keys(errors).length) { setPreview(null); showValidation(errors); return; }
     const token = version.current;
@@ -241,16 +271,23 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
     try {
       const fresh = await availability.refreshDay();
       if (!active.current || token !== version.current || !fresh) return;
+      if (!catalogSnapshot.current.ready || catalogSnapshot.current.policyKey !== preview.mobilePolicyKey) {
+        setPreview(null);
+        setError("The mobile booking rules changed. Review the current services and your details again before sending.");
+        return;
+      }
       const freshSlot = fresh.slots.find(item => item.time === preview.time);
       if (!freshSlot) { recoverConflict(); return; }
       if (fresh.timezone !== preview.timezone || fresh.durationMinutes !== preview.durationMinutes
-        || freshSlot.startAt !== preview.startAt || freshSlot.endAt !== preview.endAt) {
+        || freshSlot.startAt !== preview.startAt || freshSlot.endAt !== preview.endAt
+        || travelAllowance(mobileBooking, fresh) !== preview.travelBufferMinutes) {
         version.current++;
         setPreview(null);
         setError("The shop’s scheduling details have changed. Please review your updated appointment time and duration before sending.");
         return;
       }
-      const payload = Object.fromEntries(["name", "email", "phone", "vehicle", "service", "date", "time", "notes"].map(key => [key, preview[key]]));
+      const payload = Object.fromEntries(["name", "email", "phone", "vehicle", "service", "date", "time", "notes",
+        ...(preview.mobileBooking ? mobileFieldNames : [])].map(key => [key, preview[key]]));
       postStarted = true;
       const response = await fetch("/api/appointments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await response.json().catch(() => ({}));
@@ -289,6 +326,11 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
     <div className="site-container booking-container">
       {!saved && <ServiceCatalogStatus catalog={catalog} />}
       <AppointmentEmailTestNotice configuration={emailTest} />
+      {mobileBooking && !saved && <section className="booking-mobile-notice" aria-labelledby="booking-mobile-heading">
+        <h2 id="booking-mobile-heading">Mobile requests require mechanic approval</h2>
+        <p>All mobile services, including Wiper Blade Replacement, stay pending until the mechanic checks coverage, the visit location, and travel arrangements.</p>
+        <p>At least {mobileBooking.travelBufferMinutes} minutes are reserved after service for planned travel. This is separate from the service estimate and is not a driving-time guarantee or a fee.</p>
+      </section>}
       {!saved && catalog.ready && selection.service && !service && <p className="booking-error" role="alert">The selected service is no longer available for new appointments. Choose another service; your contact and vehicle details are still here.</p>}
       {!saved && <ol className="booking-steps" aria-label="Booking steps">{stepLabels.map((label, index) => <li key={label} aria-current={currentStep === index + 1 ? "step" : undefined} className={currentStep > index + 1 ? "is-complete" : ""}><span>{currentStep > index + 1 ? <Icon name="check" /> : `0${index + 1}`}</span>{label}</li>)}</ol>}
       {error && <p className="booking-error" role="alert" tabIndex={-1} ref={errorBox}>{error}</p>}
@@ -309,7 +351,9 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
         <span className="booking-success-icon"><Icon name={saved.status === "confirmed" ? "check" : "clock"} /></span>
         <p className="eyebrow">{emailTest ? "PRIVATE EMAIL TEST · " : ""}{saved.status === "confirmed" ? "APPOINTMENT CONFIRMED" : "REQUEST RECEIVED"}</p>
         <h2 id="booking-success-heading" tabIndex={-1} ref={successHeading}>{saved.status === "confirmed" ? "You’re on the schedule." : "Your next step is in good hands."}</h2>
-        <p className="booking-success-message" role="status">{saved.status === "pending" ? "Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet." : "Your appointment has been confirmed. The service duration is a booking estimate, not a guaranteed repair completion time."}</p>
+        <p className="booking-success-message" role="status">{saved.status === "pending"
+          ? saved.request.mobileBooking ? "Your mobile appointment request has been received and is awaiting the mechanic’s coverage, location, and travel review. Your appointment is not confirmed yet." : "Your appointment request has been received and is awaiting mechanic approval. Your appointment is not confirmed yet."
+          : "Your appointment has been confirmed. The service duration is a booking estimate, not a guaranteed repair completion time."}</p>
         <div className="booking-reference"><span>YOUR REFERENCE ID</span><strong>{saved.id}</strong></div>
         {saved.status === "pending" && saved.holdExpiresAt && <p className="booking-hold">Your provisional time reservation expires <time dateTime={saved.holdExpiresAt}>{formatShopTimestamp(saved.holdExpiresAt, saved.request.timezone)}</time> ({saved.request.timezone}). Your request stays on file after expiry, but availability must be checked again before approval.</p>}
         <Summary request={saved.request} />
@@ -323,7 +367,7 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
             <div className="booking-panel-heading"><span className="booking-step-number">01</span><div><p className="booking-kicker">START WITH YOUR VEHICLE</p><h2>What can we help with?</h2></div></div>
             <div className="booking-service-layout"><div className="booking-field"><label htmlFor="booking-service">Service needed</label><select id="booking-service" name="service" value={service ? selection.service : ""} onChange={changeService} onBlur={() => validateField("service")} ref={node => { fieldElements.current.service = node; }} aria-invalid={Boolean(fieldErrors.service) || undefined} aria-describedby={fieldErrors.service ? "booking-service-error" : undefined} required>
               <option value="">Choose a service</option>{SERVICE_CATEGORIES.map(category => <optgroup label={category.label} key={category.id}>{catalog.services.filter(item => item.category === category.id).map(item => <option value={item.name} key={item.name}>{item.name}{item.provisional ? " (provisional)" : ""}</option>)}</optgroup>)}
-            </select><FieldError name="service" message={fieldErrors.service} /></div><div className="booking-service-hint"><Icon name={service?.icon || "wrench"} /><p>{service?.category === "repairs" ? "Repairs & Diagnostics requests always need mechanic approval." : "Not sure what your car needs? Choose Other / Not Sure and describe what you’ve noticed."}</p></div></div>
+            </select><FieldError name="service" message={fieldErrors.service} /></div><div className="booking-service-hint"><Icon name={service?.icon || "wrench"} /><p>{mobileBooking ? "Every mobile request needs mechanic review of coverage, location, and travel before confirmation." : service?.category === "repairs" ? "Repairs & Diagnostics requests always need mechanic approval." : "Not sure what your car needs? Choose Other / Not Sure and describe what you’ve noticed."}</p></div></div>
             {service?.provisional && <p className="booking-notice"><strong>Provisional service.</strong> {service.name} availability needs Edward’s confirmation before an appointment can be approved.</p>}
           </fieldset>
 
@@ -343,7 +387,13 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
             <div className="booking-panel-heading"><span className="booking-step-number">03</span><div><p className="booking-kicker">LET’S GET TO KNOW YOUR CAR</p><h2 ref={detailHeading} tabIndex={-1}>Your details. Your vehicle.</h2></div></div>
             {!slot && <p className="booking-details-hint">You can enter your details now. Select an available appointment date and time before reviewing your request. Your information stays here if you need to choose a different time.</p>}
             <div className="booking-details-grid">
-              {Object.keys(emptyDetails).map(name => <CustomerField key={name} name={name} value={details[name]} error={fieldErrors[name]} onChange={changeDetails} onBlur={() => validateField(name)} inputRef={node => { fieldElements.current[name] = node; }} readOnly={name === "email" && Boolean(emailTest)} />)}
+              {Object.keys(emptyDetails).filter(name => !mobileFieldNames.includes(name) && name !== "notes").map(name => <CustomerField key={name} name={name} value={details[name]} error={fieldErrors[name]} onChange={changeDetails} onBlur={() => validateField(name)} inputRef={node => { fieldElements.current[name] = node; }} readOnly={name === "email" && Boolean(emailTest)} />)}
+              {mobileBooking && <section className="booking-mobile-location booking-wide" aria-labelledby="booking-mobile-location-heading">
+                <h3 id="booking-mobile-location-heading">Where should we visit?</h3>
+                <p id="booking-mobile-location-help">Your city, state, and ZIP code are used privately to review service coverage and travel. Provide the full street address privately when arranging the visit; this form does not verify routes or location suitability.</p>
+                <div className="booking-mobile-location-fields">{mobileFieldNames.map(name => <CustomerField key={name} name={name} value={details[name] ?? ""} error={fieldErrors[name]} onChange={changeDetails} onBlur={() => validateField(name)} inputRef={node => { fieldElements.current[name] = node; }} />)}</div>
+              </section>}
+              <CustomerField name="notes" value={details.notes} error={fieldErrors.notes} onChange={changeDetails} onBlur={() => validateField("notes")} inputRef={node => { fieldElements.current.notes = node; }} />
             </div>
             <div className="booking-review-action"><p>Review your details before anything is sent.</p><button className="button button-primary" type="submit" disabled={locked}>{checking ? "Rechecking your time…" : "Review Appointment Request"}<Icon name="arrow" /></button></div>
           </fieldset>
@@ -351,7 +401,7 @@ function BookingExperience({ initialService, details, setDetails, catalog, email
         {preview && <section className="booking-panel booking-review-panel" aria-labelledby="booking-review-heading">
           <div className="booking-panel-heading"><span className="booking-step-number">04</span><div><p className="booking-kicker">ONE LAST LOOK</p><h2 id="booking-review-heading" tabIndex={-1} ref={reviewHeading}>Review your appointment request.</h2></div></div>
           <p>Nothing has been submitted yet. Check the details below, then send your request when you’re ready.</p><Summary request={preview} />
-          <p className="booking-notice">{preview.provisional ? "This service is provisional and needs availability confirmation. " : ""}A pending request is not a confirmed appointment. We’ll show the status saved by the shop after you send.</p>
+          <p className="booking-notice">{preview.provisional ? "This service is provisional and needs availability confirmation. " : ""}{preview.mobileBooking ? "The mechanic must review coverage, the visit location, and travel before confirming this mobile request. " : ""}A pending request is not a confirmed appointment. We’ll show the status saved by the shop after you send.</p>
           <div className="booking-actions"><button type="button" className="button button-secondary" onClick={edit} disabled={sending}>Edit Details</button><button type="button" className="button button-primary" onClick={send} disabled={sending || !catalog.ready}>{sending ? "Sending your request…" : "Send Appointment Request"}<Icon name="arrow" /></button></div>
         </section>}
       </>}
