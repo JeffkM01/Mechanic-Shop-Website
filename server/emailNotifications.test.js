@@ -84,6 +84,7 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
             delete copy.management;
             delete copy.notificationRetry;
             delete copy.notificationTestRunId;
+            delete copy.mobileVisit;
             return copy;
           });
           afterBatch?.();
@@ -94,10 +95,12 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
     findById(id) {
       let privateManagement = false;
       let privateScope = false;
+      let privateMobileVisit = false;
       return {
         select(fields) {
           privateManagement = fields.split(" ").includes("+management");
           privateScope = fields.split(" ").includes("+notificationTestRunId");
+          privateMobileVisit = fields.split(" ").includes("+mobileVisit");
           onSelect?.(fields); return this;
         },
         async lean() {
@@ -107,6 +110,7 @@ function fakeAppointmentModel(records, { afterBatch, beforeFreshRead, onSelect }
           const copy = structuredClone(record);
           if (!privateManagement) delete copy.management;
           if (!privateScope) delete copy.notificationTestRunId;
+          if (!privateMobileVisit) delete copy.mobileVisit;
           return copy;
         },
       };
@@ -131,6 +135,32 @@ test("customer receipt says pending, not confirmed", () => {
   assert.equal(email.to, sample.email);
   assert.match(email.text, /PENDING/);
   assert.doesNotMatch(email.text, /CONFIRMED/);
+});
+
+test("mobile mail uses private location details from the fresh record and acknowledges its existing queue", async () => {
+  const record = { ...structuredClone(sample),
+    scheduling: { durationMinutes: 60, bufferMinutes: 75, timezone: "America/Chicago" },
+    mobileVisit: { city: "Old Synthetic City", state: "MO", postalCode: "63301", travelBufferMinutes: 75 },
+    notificationState: { requestCustomer: "pending", requestMechanic: "pending", decisionCustomer: "not-applicable" },
+  };
+  const sent = [];
+  const selections = [];
+  const service = await createEmailNotifications({
+    Appointment: fakeAppointmentModel([record], { afterBatch() { record.mobileVisit.city = "Fresh Synthetic City"; }, onSelect: value => selections.push(value) }),
+    env: config, transport: { async sendMail(message) { sent.push(message); } },
+  });
+  await service.processPending();
+  assert.equal(sent.length, 2);
+  for (const message of sent) {
+    assert.match(message.text, /Mobile service location: Fresh Synthetic City, MO 63301/);
+    assert.match(message.text, /travel planning allowance after service: 75 minutes/);
+    assert.doesNotMatch(message.text, /Old Synthetic City/);
+  }
+  assert.ok(selections.every(value => value.split(" ").includes("+mobileVisit")));
+  assert.equal(record.notificationState.requestCustomer, "sent");
+  assert.equal(record.notificationState.requestMechanic, "sent");
+  await service.processPending();
+  assert.equal(sent.length, 2, "a normal retry sweep does not replay acknowledged mobile notices");
 });
 
 test("mechanic request includes contact and notes", () => {
@@ -829,7 +859,7 @@ test("management links use private fresh metadata without persisting raw credent
   await service.processPending();
   assert.equal(record.notificationState.requestCustomer, "pending");
   assert.ok(attempts[0].text.includes(managementLink));
-  assert.ok(selections.every(fields => fields === "+management +notificationRetry +notificationTestRunId"));
+  assert.ok(selections.every(fields => fields === "+management +notificationRetry +notificationTestRunId +mobileVisit"));
   assert.ok(logs.length > 0);
   assert.ok(logs.every(message => !message.includes(bearer) && !message.includes("manage-appointment") && !message.includes("Customer:")));
   assert.equal(JSON.stringify(record).includes(bearer), false);

@@ -1,4 +1,5 @@
 import { fieldLimits, validateAppointmentFields } from "../shared/appointmentFields.js";
+import { prepareMobileLocation, validateMobileBookingPolicy } from "../shared/mobileBooking.js";
 
 // Preserve the existing export for consumers while sharing the catalog.
 export { ACCEPTED_SERVICE_NAMES as services } from "../shared/services.js";
@@ -9,8 +10,10 @@ export function prepareAppointment(body, now = new Date(), options) {
     return { error: "Please provide a valid appointment request." };
   }
 
-  const fields = validateAppointmentFields(body, now, options);
+  const mobilePolicy = validateMobileBookingPolicy(options?.mobileBookingPolicy);
+  const location = mobilePolicy ? prepareMobileLocation(body) : null;
+  const fields = { ...validateAppointmentFields(body, now, options), ...(location?.fields || {}) };
   if (Object.keys(fields).length) return { error: Object.values(fields)[0], fields };
   const data = Object.fromEntries(Object.keys(fieldLimits).map(key => [key, (body[key] ?? "").trim()]));
-  return { value: data };
+  return { value: { ...data, ...(location?.value || {}) } };
 }

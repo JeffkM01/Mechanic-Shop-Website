@@ -68,9 +68,9 @@ Create separate requests for the branches below. Use an offered, active manual-a
 | Decline a separate pending request | One customer decline with the exact saved customer-facing explanation. No fabricated replacement time. |
 | Mechanic cancels a separate future request | One customer cancellation with the saved reason. Verify the cancelled record remains and only its reservation is released. |
 | Customer cancels another future request using its emailed management link | One customer cancellation and one separate mechanic cancellation notice. Verify the recorded actor is customer, the page disables further cancellation, and any repeated API cancellation preserves the original metadata without queuing new notification intents. |
-| Submit an eligible automatic Wiper Blade Replacement request, only if the saved owner-approved configuration already enables it | One customer confirmation and one mechanic notice; no duplicate pending customer receipt. The server may keep it pending if an eligibility, availability, verification, or daily-limit safeguard is unmet. |
+| Submit Wiper Blade Replacement while the mobile booking policy is active | One pending customer receipt and one mechanic notice. All new mobile requests require location/travel review, even when saved wiper automation is enabled. Confirm through the mobile review dialog, then expect one customer confirmation. |
 
-Do not enable automation or change service approval rules solely to manufacture the last case. Repairs and diagnostics always require mechanic approval. Confirm the saved status rather than assuming that an available time means automatic confirmation.
+New mobile requests always require mechanic review. Historical non-mobile requests retain their recorded rules. Do not enable automation or change service approval rules solely to manufacture an automatic case. Repairs and diagnostics always require mechanic approval. Confirm the saved status rather than assuming that an available time means automatic confirmation.
 
 Check subject/body **TEST ONLY** labeling, actual inbox/spam arrival, sender, Reply-To, service, shop-local date/time, estimate wording, hold expiry, and saved decision/reason. API/provider acceptance and a `sent` notification flag mean the provider accepted a handoff; they do not prove inbox delivery. Review Brevo's delivery events privately if needed.
 

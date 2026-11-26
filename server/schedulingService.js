@@ -7,13 +7,21 @@ import { validateCancellation } from "../shared/cancellations.js";
 import { shopTimezoneFormatter } from "../shared/shopTime.js";
 import { defaultSettings, mergeSettings, validateSettings, SchedulingError, buildCandidate, calculateSlots, canFit, legacyOccurrence, dateInZone, localDateTimeToUtc } from "./schedulingRules.js";
 import { APPOINTMENT_EMAIL_TEST_FIELD, isOwnedEmailTestRecipient, validateEmailDeliveryScope } from "./appointmentEmailScope.js";
+import { prepareMobileLocation, prepareMobileReview, validateMobileBookingPolicy } from "../shared/mobileBooking.js";
 
 const idOf = (value) => String(value);
 const overlaps = (a, b) => +new Date(a.startAt) < +new Date(b.occupiedUntil ?? b.endAt) && +new Date(b.startAt) < +new Date(a.occupiedUntil ?? a.endAt);
 const conflict = () => new SchedulingError(409, "That start time is no longer available. Please choose another time.", "SLOT_UNAVAILABLE");
 
-export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date(), management = null, deliveryScope = null }) {
+export function createSchedulingService({ Appointment, SchedulingState, now = () => new Date(), management = null, deliveryScope = null, mobileBookingPolicy = null }) {
   const emailScope = validateEmailDeliveryScope(deliveryScope);
+  const mobilePolicy = validateMobileBookingPolicy(mobileBookingPolicy);
+  const getMobileBookingPolicy = () => mobilePolicy;
+  // Apply the reviewed mobile allowance only to new availability/bookings.
+  // Saved settings and historical appointment snapshots are not rewritten.
+  const effectiveSettings = settings => mobilePolicy
+    ? { ...settings, bufferMinutes: Math.max(settings.bufferMinutes, mobilePolicy.travelBufferMinutes) }
+    : settings;
   async function readState() {
     for (let attempt = 0; attempt < 64; attempt++) {
       const state = await SchedulingState.findById("shop").lean();
@@ -151,13 +159,14 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
 
   async function getSettings() {
     const state = await readState();
-    return { revision: state.settingsRevision, settings: state.settings };
+    return { revision: state.settingsRevision, settings: state.settings, ...(mobilePolicy ? { mobileBooking: mobilePolicy } : {}) };
   }
 
   async function getPublicServices() {
     const state = await readState();
     return {
       revision: state.settingsRevision,
+      ...(mobilePolicy ? { mobileBooking: mobilePolicy } : {}),
       // Only public catalog metadata is returned. No block reasons, staffing,
       // appointment/customer details, or management credentials are included.
       services: getServiceCatalog(state.settings).filter(service => service.active !== false).map(service => ({
@@ -219,23 +228,27 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         if (count > settings.capacity) throw new SchedulingError(409, "Capacity cannot be reduced below existing held or confirmed appointments.", "CAPACITY_CONFLICT");
       }
       const revision = state.settingsRevision + 1;
-      return { next: { settings, settingsRevision: revision }, result: { revision, settings } };
+      return { next: { settings, settingsRevision: revision }, result: { revision, settings, ...(mobilePolicy ? { mobileBooking: mobilePolicy } : {}) } };
     });
   }
 
   async function getAvailability(service, date) {
     const state = await readState();
+    const settings = effectiveSettings(state.settings);
     const clock = new Date(now());
     // Validate syntax and calendar before touching any legacy appointment data.
-    const candidates = calculateSlots(state.settings, service, date, [], clock);
+    const candidates = calculateSlots(settings, service, date, [], clock);
     const current = candidates.length ? await context(state, clock) : { occupancies: [] };
-    const slots = candidates.filter(slot => canFit({ ...slot, bufferMinutes: state.settings.bufferMinutes }, current.occupancies, state.settings.capacity));
-    const definition = getService(service, getServiceCatalog(state.settings));
+    const slots = candidates.filter(slot => canFit({ ...slot, bufferMinutes: settings.bufferMinutes }, current.occupancies, settings.capacity))
+      .map(slot => mobilePolicy ? { ...slot, requiresApproval: true } : slot);
+    const definition = getService(service, getServiceCatalog(settings));
     return {
       date,
-      ...publicAvailabilityMetadata(state.settings, definition),
+      ...publicAvailabilityMetadata(settings, definition),
       slots,
-      message: "Durations are estimates for booking, not guaranteed repair completion times. Requests require approval unless verified automatic booking is enabled and eligible.",
+      message: mobilePolicy
+        ? "Mobile requests require mechanic review of coverage, location and travel before confirmation. Service durations and travel allowances are planning estimates."
+        : "Durations are estimates for booking, not guaranteed repair completion times. Requests require approval unless verified automatic booking is enabled and eligible.",
     };
   }
 
@@ -250,11 +263,12 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         pendingHoldHours: settings.pendingHoldHours,
         startIncrementMinutes: settings.startIncrementMinutes,
         bufferMinutes: settings.bufferMinutes,
-        automaticBookingEnabled: settings.automaticBookingEnabled,
+        automaticBookingEnabled: mobilePolicy ? false : settings.automaticBookingEnabled,
         businessHoursVerified: settings.businessHoursVerified,
         capacityVerified: settings.capacityVerified,
       },
       settingsProvisional: !settings.businessHoursVerified || !settings.capacityVerified,
+      ...(mobilePolicy ? { mobileBooking: mobilePolicy } : {}),
     };
   }
 
@@ -264,6 +278,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       throw new SchedulingError(400, "Month must use YYYY-MM.", "INVALID_MONTH");
     }
     const state = await readState();
+    const settings = effectiveSettings(state.settings);
     const definition = getService(service, getServiceCatalog(state.settings));
     if (!definition || definition.active === false) throw new SchedulingError(400, "Choose an available listed service.", definition ? "SERVICE_UNAVAILABLE" : "INVALID_SERVICE");
     const clock = new Date(now());
@@ -286,13 +301,13 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       if (date >= today) {
         days.push({
           date,
-          available: calculateSlots(state.settings, definition.name, date, current.occupancies, clock).length > 0,
+          available: calculateSlots(settings, definition.name, date, current.occupancies, clock).length > 0,
         });
       }
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     return {
-      ...publicAvailabilityMetadata(state.settings, definition),
+      ...publicAvailabilityMetadata(settings, definition),
       month, today, firstDate: today, lastDate, days,
       generatedAt: clock.toISOString(),
     };
@@ -304,20 +319,29 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       failure.fields = { email: `Use ${emailScope.recipient} for this private email test.` };
       throw failure;
     }
+    const location = mobilePolicy ? prepareMobileLocation(value) : null;
+    if (location?.error) {
+      const failure = new SchedulingError(400, location.error, "INVALID_MOBILE_LOCATION");
+      failure.fields = location.fields;
+      throw failure;
+    }
     const id = new mongoose.Types.ObjectId();
     const reserved = await commit((state, clock, current) => {
-      const candidate = buildCandidate(state.settings, value.service, value.date, value.time, clock);
+      const candidate = buildCandidate(effectiveSettings(state.settings), value.service, value.date, value.time, clock);
       if (!canFit(candidate, current.occupancies, state.settings.capacity)) throw conflict();
       const reservation = reservationFor(id, candidate, state, clock);
       return {
         next: { reservations: [...current.reservations, reservation] },
-        result: { reservation, clock, attemptAutomatic: automaticEligible(state.settings, getService(value.service, getServiceCatalog(state.settings))) },
+        result: { reservation, clock, attemptAutomatic: !mobilePolicy && automaticEligible(state.settings, getService(value.service, getServiceCatalog(state.settings))) },
       };
     });
     // Reserve first. A crash/ambiguous insert failure can over-block until hold
     // expiry, but must never release a slot while a write might still commit.
+    const appointmentValue = { ...value };
+    for (const field of ["city", "state", "postalCode", "mobileVisit"]) delete appointmentValue[field];
     let appointment = await new Appointment({
-      ...value, _id: id, status: "pending", scheduling: snapshot(reserved.reservation),
+      ...appointmentValue, _id: id, status: "pending", scheduling: snapshot(reserved.reservation),
+      mobileVisit: mobilePolicy ? { ...location.value, travelBufferMinutes: reserved.reservation.bufferMinutes } : undefined,
       // Explicit undefined also discards a caller-forged marker in ordinary
       // mode. Reviews/cancellations never add or replace this creation marker.
       [APPOINTMENT_EMAIL_TEST_FIELD]: emailScope?.runId,
@@ -328,7 +352,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       try { appointment = await reviewAppointment(idOf(id), "confirmed", { automatic: true }); }
       catch (error) {
         if (!(error instanceof SchedulingError) || error.status !== 409) throw error;
-        appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`);
+        appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit`);
       }
     }
     return appointment;
@@ -372,11 +396,11 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     for (let attempt = 0; attempt < 16; attempt++) {
       // Lean reads preserve absent legacy status/flags instead of applying
       // schema defaults that would make the conditional write miss the record.
-      const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
+      const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit`).lean();
       if (!appointment) throw new SchedulingError(404, "Appointment not found.");
       // Repeated requests do not replace the original actor, explanation,
       // timestamp or sent flags, and do not create new notification intents.
-      if (appointment.status === "cancelled") return Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`);
+      if (appointment.status === "cancelled") return Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit`);
       const clock = new Date(now());
       const eligibility = getCancellationEligibility(appointment, clock);
       if (!eligibility.canCancel) throw new SchedulingError(409, eligibility.message, eligibility.code);
@@ -408,7 +432,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       };
       const cancelled = await Appointment.findOneAndUpdate(filter, { $set: change }, {
         returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true },
-        projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}`,
+        projection: `+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit`,
       });
       if (!cancelled) continue;
       // The terminal record and email intents are durable before releasing its
@@ -420,10 +444,11 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     throw new SchedulingError(409, "This appointment changed. Refresh its status before trying again.", "APPOINTMENT_CHANGED");
   }
 
-  async function reviewAppointment(id, status, { automatic = false, decline } = {}) {
+  async function reviewAppointment(id, status, { automatic = false, decline, mobileReview } = {}) {
     if (!/^[a-f\d]{24}$/i.test(id)) throw new SchedulingError(400, "Invalid appointment ID.");
     if (!["confirmed", "declined"].includes(status)) throw new SchedulingError(400, "Choose confirmed or declined.");
     if (status === "declined") {
+      if (mobileReview !== undefined) throw new SchedulingError(400, "Mobile review is only accepted when confirming an appointment.", "INVALID_MOBILE_REVIEW");
       const prepared = validateDeclineReason(decline);
       if (prepared.error) {
         const failure = new SchedulingError(400, prepared.error, "INVALID_DECLINE_REASON");
@@ -436,7 +461,7 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
         decline: { ...prepared.value, declinedAt: new Date(now()), source: "mechanic" },
         "notificationState.decisionCustomer": "pending",
       };
-      const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}` };
+      const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit` };
       // A queued pending receipt would contradict this terminal decision. The
       // conditional branches suppress only an unsent receipt and preserve one
       // already sent, even if the dispatcher changes that flag concurrently.
@@ -450,8 +475,27 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       await commit((_state, _clock, current) => ({ next: { reservations: current.reservations.filter(item => idOf(item.appointmentId) !== id) }, result: null }));
       return declined;
     }
-    const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD}`).lean();
+    const appointment = await Appointment.findById(id).select(`+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit`).lean();
     if (!appointment || (appointment.status && appointment.status !== "pending")) throw new SchedulingError(409, "This request was already reviewed or no longer exists.");
+    const mobile = Object.hasOwn(appointment, "mobileVisit") && appointment.mobileVisit !== undefined;
+    let reviewedMobile;
+    if (mobile) {
+      if (automatic) throw new SchedulingError(409, "Mobile requests require mechanic review of location and travel.", "MANUAL_APPROVAL_REQUIRED");
+      const location = prepareMobileLocation(appointment.mobileVisit);
+      const minimum = Math.max(appointment.scheduling?.bufferMinutes ?? 0, appointment.mobileVisit?.travelBufferMinutes ?? NaN);
+      if (location.error || !Number.isInteger(minimum) || minimum < 0 || minimum > 120) {
+        throw new SchedulingError(409, "The saved mobile visit needs review before it can be confirmed.", "MOBILE_VISIT_INVALID");
+      }
+      const prepared = prepareMobileReview(mobileReview, minimum);
+      if (prepared.error) {
+        const failure = new SchedulingError(400, prepared.error, "INVALID_MOBILE_REVIEW");
+        failure.fields = prepared.fields;
+        throw failure;
+      }
+      reviewedMobile = prepared.value;
+    } else if (mobileReview !== undefined) {
+      throw new SchedulingError(400, "This historical request has no recorded mobile review to confirm.", "MOBILE_REVIEW_NOT_REQUIRED");
+    }
     const confirmed = await commit((state, clock, current) => {
       const definition = getService(appointment.service, getServiceCatalog(state.settings));
       if (automatic && (!definition || !automaticEligible(state.settings, definition))) throw new SchedulingError(409, "This request requires mechanic approval.", "MANUAL_APPROVAL_REQUIRED");
@@ -463,10 +507,17 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       const requestedDate = dateInZone(original.startAt, state.settings.timezone);
       const parts = new Intl.DateTimeFormat("en-GB", { timeZone: state.settings.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(original.startAt);
       const requestedTime = `${parts.find(part => part.type === "hour").value}:${parts.find(part => part.type === "minute").value}`;
+      // A concurrent approval may already have reserved a longer travel
+      // interval before its appointment write settles. Never shrink that
+      // admitted interval while a competing booking could claim the gap.
+      const held = current.occupancies.find(item => item.id === id);
+      const originalBuffer = (+original.occupiedUntil - +original.endAt) / 60_000;
+      const admittedBuffer = held ? Math.max(0, (+new Date(held.occupiedUntil ?? held.endAt) - +original.endAt) / 60_000) : 0;
+      const bufferMinutes = mobile ? Math.max(originalBuffer, reviewedMobile.travelBufferMinutes, admittedBuffer) : originalBuffer;
       const candidate = buildCandidate(state.settings, appointment.service, requestedDate, requestedTime, clock, {
         approval: true,
         durationMinutes: (+original.endAt - +original.startAt) / 60_000,
-        bufferMinutes: (+original.occupiedUntil - +original.endAt) / 60_000,
+        bufferMinutes,
       });
       if (!canFit(candidate, current.occupancies.filter(item => item.id !== id), state.settings.capacity)) throw conflict();
       const counts = state.automaticCounts.filter(item => item.date >= dateInZone(clock, state.settings.timezone)).map(item => ({ ...item }));
@@ -491,8 +542,14 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
       status: "confirmed",
       scheduling: { ...snapshot(confirmed.reservation), holdExpiresAt: appointment.scheduling?.holdExpiresAt, confirmedAt: confirmed.clock },
       "notificationState.decisionCustomer": "pending",
+      ...(mobile ? {
+        "mobileVisit.travelBufferMinutes": confirmed.reservation.bufferMinutes,
+        "mobileVisit.locationConfirmed": true,
+        "mobileVisit.travelConfirmed": true,
+        "mobileVisit.reviewedAt": confirmed.clock,
+      } : {}),
     };
-    const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD}` };
+    const options = { returnDocument: "after", runValidators: true, writeConcern: { w: "majority", j: true }, projection: `+${APPOINTMENT_EMAIL_TEST_FIELD} +mobileVisit` };
     let updated;
     if (automatic) {
       // Status and suppression commit together. A pending receipt must not
@@ -539,5 +596,5 @@ export function createSchedulingService({ Appointment, SchedulingState, now = ()
     return { removed: true };
   }
 
-  return { getSettings, getPublicServices, getPublicShopHours, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
+  return { getSettings, getMobileBookingPolicy, getPublicServices, getPublicShopHours, updateSettings, getAvailability, getCalendarAvailability, createAppointment, reviewAppointment, getCancellationEligibility, cancelAppointment, addBlockedPeriod, removeBlockedPeriod };
 }

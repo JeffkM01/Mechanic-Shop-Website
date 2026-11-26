@@ -1,45 +1,46 @@
-# Mobile service contact and travel planning
+# Mobile service booking and travel review
 
-## Current reviewed scope
+## Approved public arrangement
 
-Edward is a mobile mechanic who visits customers. The owner asked to remove the unknown public phone placeholder. Contact now uses the independently approved `contact@edsautoshop.com` inbox and identifies mobile visits. There is no approved public street address. Neither a home address nor a dealership address is published.
+Edward visits customers. Public contact uses `contact@edsautoshop.com`; an unknown public phone remains absent. No home, dealership or storefront address is published.
 
-The suggested St. Louis/Illinois area is tentative. Exact cities/ZIPs, maximum travel, suitable work locations, travel charges (if any), and the individual visit process remain unconfirmed. The website asks customers to email a city or ZIP code and the requested service to discuss coverage and arrangements before booking; it does not promise every location can be served. Do not put a customer's street address in this public profile, availability responses, URLs, or ordinary logs.
+The approved wording is: “Mobile mechanic serving the St. Louis area and selected Illinois locations, generally within about a 50-minute drive of St. Charles, Missouri. Coverage depends on the location and travel arrangements; mechanic review is required.” This is qualified coverage wording, not a guaranteed radius, a promise to serve all Illinois, a price, or an automatic geographic check.
 
-## Public profile contract
+`contact.mobileService` retains its optional schema-version-1 public fields `serviceArea` and `visitInstructions`. The approved email-only mobile contact needs no public phone or street address. Those public fields must never contain a private customer address, credentials or appointment details. The cancellation policy remains cancellation until the scheduled start with no fee; publication approval is recorded in the public profile. Privacy approval still requires an explicit retention decision.
 
-`contact.mobileService` is optional in a schema-version-1 profile and has exactly two fields:
+## New customer requests
 
-| Field | Meaning |
-| --- | --- |
-| `serviceArea` | Null until reviewed, or bounded public coverage wording up to 300 characters. |
-| `visitInstructions` | Null until reviewed, or public instructions up to 600 characters explaining how a visit is arranged. |
+The server publishes the active mobile policy through `/api/services` and scheduling metadata. The customer form requires **service city, state (MO/IL), and ZIP code** when this policy is active. Both React and Express validate those fields. The scheduling service validates them again before reserving capacity. Format checks do not establish that a ZIP belongs to a city/state, that the site is suitable, or that Edward can reach it.
 
-Presence identifies mobile service. Mobile profiles keep `addressLines` empty. An unknown phone is omitted from Contact; an approved real phone can later be shown. Only aggregate-approved coverage and visit instructions are published. Draft mobile contact uses a generic coverage inquiry and the existing approved email when available.
+New records receive a private `mobileVisit` snapshot containing the normalized city/state/ZIP, reserved travel allowance and eventual mechanic review. The customer cannot supply review timestamps or choose a different approval rule. The field is excluded from ordinary queries, public availability and unauthenticated response DTOs; authenticated staff can review it and authorized notification recipients receive a limited location summary. It contains no full street address. Full address/site access are arranged privately through the shop inbox before the mechanic acknowledges review.
 
-Full mobile contact approval requires email, service area and visit instructions, and can be email-only. A phone or storefront address is not required for that arrangement. Older storefront profiles retain their validation and rendering. Independent `emailConfirmed=true` does not approve coverage, travel, privacy, retention, or public launch. The actual profile keeps `contact.confirmed=false` and policy approvals false while these decisions remain unresolved.
+Unsent location details stay in page memory. They are preserved across service/calendar corrections and are not written to localStorage/sessionStorage. Invalid or stale policy/availability cannot silently turn a mobile request into an automatically confirmed booking.
 
-## Travel allowance to discuss with Edward
+## Travel allowance and capacity
 
-A useful initial proposal is **30 minutes between nearby visits**, subject to actual route review. For farther visits, use the route estimate **plus 10–15 minutes for arrival/setup or uncertainty**, then round up to an appropriate allowance. An Illinois trip may require 60 minutes or more; crossing a state line is not itself a measure of distance or traffic. These are planning suggestions, not approved settings, prices, or promises to customers.
+The reviewed **provisional minimum is 75 minutes after each new mobile service**, configured once in `shared/mobileBooking.js`. It reflects roughly 50 minutes driving plus 15 minutes for arrival/setup, rounded up. It is a planning allowance, not a price, travel charge, guaranteed arrival time or repair duration. Check the actual route between consecutive customers: two customers each about 50 minutes from St. Charles may be much farther apart.
 
-Check the trip between consecutive customers, not only each customer's distance from Edward's starting point. Two customers each one hour from that starting point may be much farther apart. Review the first trip of the day, return travel, parking/access, road conditions, and how lunch and closing time affect the day.
+Availability, day/month calendars and booking submission use the greater of this mobile minimum and the saved global appointment buffer. Existing saved settings are not rewritten; a saved buffer of 0 does not remove the mobile allowance. The dashboard explains the effective rule. Service time plus travel must fit working hours and avoid lunch, blocks and occupied capacity. Configured start increments can push the next offered start later still.
 
-Illustrative examples, not shop commitments:
+The mechanic can increase a request's recorded travel allowance up to 120 minutes during approval, never shorten its already reserved time. The backend rechecks the extension inside the existing MongoDB compare-and-swap reservation operation before confirming. A concurrent booking or approval cannot take the protected interval. An extension that conflicts with lunch, closing, blocked time or another request fails clearly and leaves the customer request pending.
 
-| Previous service ends | Estimated drive + arrival/setup | Time to reserve for travel | Earliest following start with hourly increments |
-| --- | --- | --- | --- |
-| 9:30 AM | 20 + 10 minutes | 30 minutes | 10:00 AM, if the rest of the calendar permits |
-| 9:30 AM | 50 + 10 minutes | 60 minutes | 11:00 AM, if the rest of the calendar permits |
+Use reviewed blocked periods for additional one-off unavailability where the calendar permits. Do not delete or shorten somebody else's reservation to fit a route. Review the first/last trip, access and return travel too. Routes that cannot fit need a different arrangement agreed with the customer; no replacement appointment is created automatically.
 
-## Existing dashboard controls
+## Mechanic approval
 
-**Booking Settings → Appointment buffer (minutes)** reserves extra time after each newly booked service and includes it in overlap/capacity checks. Its supported range is 0–120 minutes. It does not look up addresses, estimate driving routes, guarantee location suitability, or add a travel fee. Start increments, breaks, working hours and blocked time can push the next offered start later than the end of that buffer.
+Every **new mobile request**, including Wiper Blade Replacement, stays pending until the mechanic confirms:
 
-The last owner-supplied saved buffer was **0**. This change does not modify it or any saved hours, capacity, services, estimates, appointment statuses or automation. Existing appointments retain their duration and buffer snapshots; a changed global buffer does not rewrite previously booked visits. Review older bookings separately.
+1. Coverage, the privately arranged service address and site access have been checked.
+2. The actual route between appointments has been checked and enough travel time reserved.
 
-Use **Closures & Blocked Times** for reviewed one-off travel or other unavailable periods where the calendar permits. The server rejects conflicts with protected reservations; do not remove or shorten another customer's reservation to fit a route. Reserve the first trip separately if it belongs within the published working day. Pending requests provisionally occupy time and need the same planning attention as confirmed visits.
+The confirmation dialog sends these acknowledgments and the chosen buffer. The server enforces them even if a caller bypasses React or the factory is later configured without mobile mode. A saved review timestamp is written only with the durable confirmation. The acknowledgments record a human review; they do not claim a map/routing provider has verified the route.
 
-The customer form still has no dedicated private service-location field, and the backend does not validate location/travel eligibility. This PR changes public contact presentation and documentation, not routing or booking approval logic. Discuss the location privately through the approved inbox before agreeing a mobile visit. Collect the full service address only when necessary through an agreed private process.
+Saved global automation and per-service eligibility are retained rather than silently overwritten, but they do not automatically confirm new mobile records. The dashboard labels these retained settings honestly. Historical non-mobile requests and already confirmed appointments retain their original snapshots/statuses and can still be reviewed at historical off-grid times under existing conflict/capacity rules. No historical mobile metadata is invented or backfilled.
 
-Only Wiper Blade Replacement is automatic-eligible under the existing rules, and its saved eligibility is unchanged. Before enabling real automatic mobile bookings, Edward must decide how location, access and travel are checked. A service confirmation currently does not verify these facts. Restricted synthetic testing can continue without advertising real mobile availability. Keep protected staging until the mobile workflow and remaining launch checks are reviewed.
+## Operations and launch
+
+`mobileVisit` is an optional private MongoDB subdocument; no record migration or new reservation index is required. Existing Mongo-backed reservation serialization, pending-hold expiry, decline/cancellation history, session security, CSRF, retries and scoped email tests remain in place. Management links still authorize only one appointment and must stay private.
+
+For owned-inbox staging tests, create a new fictional mobile request, wait for receipts, and approve through the new review dialog. Wipers should also remain pending. Test a travel extension that conflicts with another reservation and verify that the pending request and other reservation remain intact.
+
+Keep protected staging until privacy/retention and [production operations](production-operations-checklist.md) are reviewed. Host configuration, completed backups, an isolated restore drill and working alert recipients remain owner-operated checks; repository tests do not verify them. Ordinary production mail still needs its own reviewed configuration and a clean production database/reconciliation plan. No purchase, deployment, real email or database access is authorized by this runbook.

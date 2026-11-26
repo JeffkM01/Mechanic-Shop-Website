@@ -68,6 +68,12 @@ assert.equal((await fetch(`${origin}/api/mechanic/logout`, { method: "POST", hea
 assert.equal((await fetch(`${origin}/api/mechanic/appointments`, { headers: privateHeaders })).status, 401);
 
 const service = "Wiper Blade Replacement";
+const catalog = await (await fetch(`${origin}/api/services`, { headers: { authorization } })).json();
+// This script runs through stdin from /app in the packaged image. Check the
+// runtime policy against the public source profile without opening a database.
+const { businessProfile } = await import("./shared/businessProfile.js");
+assert.equal(Boolean(catalog.mobileBooking), Boolean(businessProfile.contact.mobileService));
+const mobileLocation = catalog.mobileBooking ? { city: "Synthetic Container City", state: "MO", postalCode: "63301" } : {};
 let calendar = await (await fetch(`${origin}/api/availability/calendar?${new URLSearchParams({ service })}`, { headers: { authorization } })).json();
 let date = calendar.days.find(day => day.available)?.date;
 if (!date && calendar.lastDate.slice(0, 7) !== calendar.month) {
@@ -78,7 +84,7 @@ assert.ok(date, "Fresh synthetic schedule must offer a future date");
 const availability = await (await fetch(`${origin}/api/availability?${new URLSearchParams({ service, date })}`, { headers: { authorization } })).json();
 const booking = await fetch(`${origin}/api/appointments`, {
   method: "POST", headers: { authorization, "Content-Type": "application/json" },
-  body: JSON.stringify({ name: "Synthetic Container Customer", email: "container@example.invalid", phone: "555-555-0123", vehicle: "2018 Honda Civic", service, date, time: availability.slots[0].time, notes: "CI-only synthetic request" }),
+  body: JSON.stringify({ name: "Synthetic Container Customer", email: "container@example.invalid", phone: "555-555-0123", vehicle: "2018 Honda Civic", service, date, time: availability.slots[0].time, notes: "CI-only synthetic request", ...mobileLocation }),
 });
 assert.equal(booking.status, 201);
 const saved = await booking.json();

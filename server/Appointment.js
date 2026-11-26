@@ -33,6 +33,21 @@ export const appointmentSchema = new mongoose.Schema({
   notes: { type: String, default: "", maxlength: 1000 },
   status: { type: String, enum: ["pending", "confirmed", "declined", "cancelled"], default: "pending" },
   management: { type: managementSchema, select: false, default: undefined },
+  // Only new mobile bookings receive this private snapshot. Historical
+  // requests are not backfilled, and only mechanic approval records review.
+  mobileVisit: {
+    type: new mongoose.Schema({
+      city: { type: String, required: true, trim: true, maxlength: 80, immutable: true },
+      state: { type: String, required: true, enum: ["MO", "IL"], immutable: true },
+      postalCode: { type: String, required: true, match: /^\d{5}(?:-\d{4})?$/, maxlength: 10, immutable: true },
+      travelBufferMinutes: { type: Number, required: true, min: 0, max: 120, validate: Number.isInteger },
+      locationConfirmed: { type: Boolean, default: undefined },
+      travelConfirmed: { type: Boolean, default: undefined },
+      reviewedAt: { type: Date, default: undefined },
+    }, { _id: false }),
+    default: undefined,
+    select: false,
+  },
   // Only newly created, server-scoped synthetic requests receive this marker.
   // It is private, immutable, and absent on every historical/ordinary record.
   [APPOINTMENT_EMAIL_TEST_FIELD]: {

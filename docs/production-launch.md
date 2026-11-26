@@ -142,6 +142,8 @@ Internal `HOST=0.0.0.0` lets container ingress reach Node. The external loopback
 
 ## Health, shutdown, and monitoring
 
+For plain-language meanings, exact email setting names, provider-dashboard checks and an owner verification record, use the [production operations checklist](production-operations-checklist.md). Its hosted checks remain unverified until the operator supplies real evidence; repository tests and configuration reports do not provision backups or monitoring.
+
 `GET /api/health` is readiness: HTTP 200 with a connected database, HTTP 503 when the database is unavailable or shutdown has begun. It contains no appointment/customer data. The Docker health check uses this endpoint.
 
 `GET /api/health/live` is process liveness. Configure the chosen host's readiness checks, restart policy, external uptime notification, and application error alerting explicitly. Adding endpoints does not provision monitoring or prove that an alert reaches Edward.
@@ -158,7 +160,7 @@ Use staging or a separately approved controlled production smoke test with synth
 
 Start with the [controlled Brevo connection test](controlled-email-test.md) for the fixed owner inbox. A successful probe does not enable the appointment queue or management grants. For the appointment-email and management-link checks below, follow the separately reviewed [scoped workflow runbook](appointment-email-workflow-test.md): keep the gateway and isolated database, turn the standalone probe off, and enable only a fresh run of synthetic requests addressed to the owned inbox. Earlier requests and other runs remain excluded without changing their statuses or reservations. Finish by disabling the workflow flag; pending test intents are retained, and already in-flight mail cannot be recalled. Do not remove staging protection or enable an accumulated ordinary queue to perform these checks.
 
-1. Finish Edward's public-profile, service, policy, scheduling, and capacity review. Keep automation off unless he separately verifies actual hours/capacity and explicitly enables eligible Wiper Blade Replacement automation.
+1. Finish Edward's public-profile, service, policy, scheduling, and capacity review. The active mobile policy requires location/travel review before confirming every new mobile request, including Wiper Blade Replacement, regardless of retained automatic-eligibility settings. Check the effective travel allowance and protected reservations; historical appointments retain their recorded snapshots.
 2. Run lint, production build, frontend/API tests, and the complete browser suite. Never point fixtures at production data.
 3. Run the offline launch check with intended production settings. Resolve its blockers, then separately verify its operational items.
 4. Check actual HTTPS/TLS, same-origin `/api` forwarding, health probes, frontend deep links (`/services`, `/appointment`, `/mechanic`, `/manage-appointment`), API 404 responses, and missing-asset 404 responses.

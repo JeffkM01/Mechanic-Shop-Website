@@ -80,7 +80,8 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
   app.post("/api/appointments", track(async (req, res, next) => {
     // Date/time syntax is checked here; the shop's persisted timezone, hours,
     // notice and capacity rules are applied atomically by scheduling below.
-    const { error, fields, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true, deferServiceValidation: true });
+    const { error, fields, value } = prepareAppointment(req.body, new Date(), { schedulingAuthoritative: true, deferServiceValidation: true,
+      mobileBookingPolicy: scheduling.getMobileBookingPolicy?.() });
     if (error) return res.status(400).json({ error, ...(fields ? { fields } : {}) });
     try {
       const appointment = await scheduling.createAppointment(value);
@@ -127,11 +128,16 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
     if (!["all", "pending", "confirmed", "declined", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status filter." });
     try {
       const appointments = await Appointment.find(status === "all" ? {} : status === "pending" ? { status: { $in: ["pending", null] } } : { status })
-        .select(`name email phone vehicle service date time notes status decline cancellation createdAt updatedAt scheduling +${APPOINTMENT_EMAIL_TEST_FIELD}`)
+        .select(`name email phone vehicle service date time notes status decline cancellation createdAt updatedAt scheduling +mobileVisit +${APPOINTMENT_EMAIL_TEST_FIELD}`)
         .sort({ createdAt: -1 }).limit(100).lean();
       res.json({ appointments: appointments.map(appointment => {
         const payload = { ...appointment, status: appointment.status || "pending", cancellationEligibility: scheduling.getCancellationEligibility?.(appointment) || { canCancel: false } };
         delete payload[APPOINTMENT_EMAIL_TEST_FIELD];
+        if (appointment.mobileVisit) {
+          const { city, state, postalCode, travelBufferMinutes, locationConfirmed, travelConfirmed, reviewedAt } = appointment.mobileVisit;
+          payload.mobileVisit = { city, state, postalCode, travelBufferMinutes,
+            ...(reviewedAt ? { locationConfirmed, travelConfirmed, reviewedAt } : {}) };
+        }
         if (workflowEnabled) payload.emailTestEligible = Boolean(emailEnabledFor(appointment));
         return payload;
       }) });
@@ -158,12 +164,13 @@ export function createApp({ Appointment, scheduling, auth, notifications, manage
 
   app.patch("/api/mechanic/appointments/:id", auth.requireAuth, auth.requireCsrf, track(async (req, res, next) => {
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)
-      || Object.keys(req.body).some(key => !["status", "decline"].includes(key))
-      || (req.body.status !== "declined" && Object.hasOwn(req.body, "decline"))) {
-      return res.status(400).json({ error: "Provide a review status and decline details only when declining." });
+      || Object.keys(req.body).some(key => !["status", "decline", "mobileReview"].includes(key))
+      || (req.body.status !== "declined" && Object.hasOwn(req.body, "decline"))
+      || (req.body.status !== "confirmed" && Object.hasOwn(req.body, "mobileReview"))) {
+      return res.status(400).json({ error: "Provide a review status, decline details only when declining, and mobile review only when confirming." });
     }
     try {
-      const appointment = await scheduling.reviewAppointment(req.params.id, req.body.status, { decline: req.body.decline });
+      const appointment = await scheduling.reviewAppointment(req.params.id, req.body.status, { decline: req.body.decline, mobileReview: req.body.mobileReview });
       res.json({ id: appointment.id, status: appointment.status, ...(appointment.decline ? { decline: appointment.decline } : {}), emailNotification: emailEnabledFor(appointment) ? "queued" : "disabled" });
       notifications.kick();
     } catch (error) { next(error); }

@@ -2,28 +2,28 @@
   "schemaVersion": 1,
   "name": "Ed's Auto Shop",
   "contact": {
-    "confirmed": false,
+    "confirmed": true,
     "emailConfirmed": true,
     "phone": null,
     "email": "contact@edsautoshop.com",
     "addressLines": [],
     "mobileService": {
-      "serviceArea": null,
-      "visitInstructions": "Email your city or ZIP code and the service you need to discuss the location and travel arrangements before booking."
+      "serviceArea": "Mobile mechanic serving the St. Louis area and selected Illinois locations, generally within about a 50-minute drive of St. Charles, Missouri. Coverage depends on the location and travel arrangements; mechanic review is required.",
+      "visitInstructions": "Provide your city, state, and ZIP code when requesting mobile service. The mechanic reviews coverage, site access, and travel before confirming the visit. Arrange the full service address privately by email at contact@edsautoshop.com."
     }
   },
   "privacy": {
     "approved": false,
     "effectiveDate": null,
-    "hostingProvider": null,
-    "databaseProvider": null,
+    "hostingProvider": "Render for website and appointment API hosting",
+    "databaseProvider": "MongoDB Atlas for appointment database storage",
     "emailProvider": "Brevo for automated appointment messages; Zoho Mail for business correspondence",
     "retentionPolicy": null,
-    "requestInstructions": null
+    "requestInstructions": "To request access, a correction, or deletion of your appointment information, email contact@edsautoshop.com and identify the request. We verify identity privately before making changes and review any outstanding work or records that must be retained. We will explain the outcome. Do not send passwords or private appointment-management links. Requests are reviewed manually; the website does not provide automatic deletion."
   },
   "cancellation": {
-    "approved": false,
-    "effectiveDate": null,
+    "approved": true,
+    "effectiveDate": "2026-11-25",
     "policy": "until_start_no_fee"
   }
 }
