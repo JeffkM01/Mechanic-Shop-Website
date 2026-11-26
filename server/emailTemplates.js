@@ -8,6 +8,14 @@ import { prepareMobileLocation } from "../shared/mobileBooking.js";
 // headers. Subjects are fixed, and replies use the configured shop inbox.
 export const EMAIL_KINDS = ["requestCustomer", "requestMechanic", "decisionCustomer", "cancellationCustomer", "cancellationMechanic"];
 
+function section(label, content) {
+  return content ? `${label}\n${content}` : "";
+}
+
+function plainText(...paragraphs) {
+  return `${paragraphs.filter(Boolean).join("\n\n")}\n`;
+}
+
 function mobileEmailDetails(appointment) {
   if (appointment.mobileVisit === undefined) return { details: "", review: "" };
   const prepared = prepareMobileLocation(appointment.mobileVisit);
@@ -16,17 +24,17 @@ function mobileEmailDetails(appointment) {
     throw new Error("Mobile notification details need review before email can be sent.");
   }
   const { city, state, postalCode } = prepared.value;
-  const details = `\nMobile service location: ${city}, ${state} ${postalCode}\nRecorded travel planning allowance after service: ${buffer} minutes (a scheduling estimate, not a price or guaranteed arrival time).`;
+  const details = `Mobile service location: ${city}, ${state} ${postalCode}\nRecorded travel planning allowance after service: ${buffer} minutes\n(a scheduling estimate, not a price or guaranteed arrival time).`;
   let review = "";
   if (appointment.status === "pending") {
-    review = "\nThis mobile request requires mechanic review of coverage, visit location, and travel before confirmation. The full service address is arranged privately.";
+    review = "This mobile request requires mechanic review of coverage, visit location, and travel before confirmation. The full service address is arranged privately.";
   } else if (appointment.status === "confirmed") {
     const visit = appointment.mobileVisit;
     const reviewed = visit.locationConfirmed === true && visit.travelConfirmed === true
       && visit.reviewedAt != null && Number.isFinite(+new Date(visit.reviewedAt));
     review = reviewed
-      ? "\nThe mechanic recorded a coverage and travel review for this mobile visit. Check the agreed visit details before the appointment."
-      : "\nCheck the visit location and travel arrangements with the mechanic before the appointment.";
+      ? "The mechanic recorded a coverage and travel review for this mobile visit. Check the agreed visit details before the appointment."
+      : "Check the visit location and travel arrangements with the mechanic before the appointment.";
   }
   return { details, review };
 }
@@ -45,15 +53,23 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
   const date = formatBookingDate(appointment.date) || "Date needs review";
   const time = formatBookingTime(appointment.time) || "Time needs review";
   const estimate = appointment.scheduling?.durationMinutes
-    ? `\nEstimated booking duration: ${appointment.scheduling.durationMinutes} minutes (not a guaranteed repair completion time).` : "";
+    ? `\nEstimated booking duration: ${appointment.scheduling.durationMinutes} minutes\n(not a guaranteed repair completion time).` : "";
   const holdExpiry = formatShopTimestamp(appointment.scheduling?.holdExpiresAt, timezone);
   const holdNote = appointment.status === "pending" && holdExpiry
-    ? `\nThe provisional time reservation expires at ${holdExpiry} (${timezone}). Your request remains on file after expiry, but availability must be checked again before approval.` : "";
+    ? `The provisional time reservation expires at ${holdExpiry} (${timezone}). Your request remains on file after expiry, but availability must be checked again before approval.` : "";
   const mobile = mobileEmailDetails(appointment);
-  const details = `Reference: ${id}\nCustomer: ${appointment.name}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nRequested time: ${date} at ${time} (${timezone})${estimate}${mobile.details}${holdNote}${mobile.review}`;
+  const customerDetails = section("Customer and vehicle", `Customer: ${appointment.name}\nVehicle: ${appointment.vehicle}${kind === "requestMechanic" ? `\nEmail: ${appointment.email}\nPhone: ${appointment.phone}\nNotes: ${appointment.notes || "None"}` : ""}`);
+  const mobileDetails = section("Mobile visit", [mobile.details, mobile.review].filter(Boolean).join("\n\n"));
+  const details = [
+    section("Appointment details", `Reference: ${id}\nService: ${appointment.service}\nRequested time: ${date} at ${time} (${timezone})${estimate}`),
+    customerDetails,
+    mobileDetails,
+    section("Provisional reservation", holdNote),
+  ].filter(Boolean).join("\n\n");
   const managementNote = managementLink
-    ? `Manage this appointment securely: ${managementLink}\nKeep this private link to yourself. It authorizes access to this appointment.`
+    ? `Manage this appointment securely: ${managementLink}\n\nKeep this private link to yourself. It authorizes access to this appointment.`
     : "To manage this appointment, please contact the shop by replying to this email. A secure online management link is not available in this message.";
+  const managementDetails = section("Manage appointment", managementNote);
 
   if (kind === "requestCustomer") {
     if (automaticallyConfirmed) throw new Error("Automatically confirmed appointments use the decision notification, not a request receipt.");
@@ -67,7 +83,9 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
       to: customerEmail,
       replyTo: mechanicEmail,
       subject: "Ed's Auto Shop — appointment request received",
-      text: `Hello ${appointment.name},\n\n${receiptStatus}\n\n${details}\n\n${appointment.status === "confirmed" ? "Reply to this email if you have a question about your request." : "We will contact you after the request is reviewed."}\n\n${managementNote}\n\nEd's Auto Shop`,
+      text: plainText(`Hello ${appointment.name},`, receiptStatus, details,
+        section("Next steps", appointment.status === "confirmed" ? "Reply to this email if you have a question about your request." : "We will contact you after the request is reviewed."),
+        managementDetails, "Ed's Auto Shop"),
     };
   }
 
@@ -85,13 +103,13 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
       : alreadyDeclined ? "This request is already declined. No further approval action is needed."
         : "This request has NOT been approved yet.";
     const reason = alreadyDeclined && appointment.decline?.explanation
-      ? `\nCustomer-facing decline reason: ${appointment.decline.explanation}` : "";
+      ? `Customer-facing decline reason: ${appointment.decline.explanation}` : "";
     return {
       from,
       to: mechanicEmail,
       replyTo: customerEmail,
       subject: "Ed's Auto Shop — new appointment request",
-      text: `${introduction}\n\n${details}\nEmail: ${appointment.email}\nPhone: ${appointment.phone}\nNotes: ${appointment.notes || "None"}${reason}\n\n${currentStatus}`,
+      text: plainText(introduction, details, section("Decision details", reason), section("Next steps", currentStatus)),
     };
   }
 
@@ -105,7 +123,7 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
       to: customerEmail,
       replyTo: mechanicEmail,
       subject: "Ed's Auto Shop — appointment confirmed",
-      text: `Hello ${appointment.name},\n\nYour appointment request has been CONFIRMED.\n\n${details}\n\n${managementNote}\n\nEd's Auto Shop`,
+      text: plainText(`Hello ${appointment.name},`, "Your appointment request has been CONFIRMED.", details, managementDetails, "Ed's Auto Shop"),
     };
     // Only a saved final explanation is sent. Older declined records remain
     // valid, but no category/default is used to invent a historical reason.
@@ -117,7 +135,9 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
       to: customerEmail,
       replyTo: mechanicEmail,
       subject: "Update on Your Appointment Request — Ed’s Auto Shop",
-      text: `Hello ${appointment.name},\n\nUnfortunately, we're unable to approve your appointment request for ${appointment.service} on ${date} at ${time} (${timezone}). This request has been declined.\n\n${explanation}\n\n${details}\n\n${DECLINE_NEXT_STEPS}\n\nThank you,\nEd's Auto Shop`,
+      text: plainText(`Hello ${appointment.name},`,
+        `Unfortunately, we're unable to approve your appointment request for ${appointment.service} on ${date} at ${time} (${timezone}). This request has been declined.`,
+        section("Decision details", explanation), details, section("Next steps", DECLINE_NEXT_STEPS), "Thank you,\nEd's Auto Shop"),
     };
   }
 
@@ -133,7 +153,11 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
     const originalTime = formatBookingTime(cancellation.originalTime || appointment.time) || "Time needs review";
     const originalTimezone = cancellation.timezone || timezone;
     const cancelledAt = formatShopTimestamp(cancellation.cancelledAt, originalTimezone);
-    const cancellationDetails = `Reference: ${id}\nVehicle: ${appointment.vehicle}\nService: ${appointment.service}\nOriginal appointment: ${originalDate} at ${originalTime} (${originalTimezone})${mobile.details}${cancelledAt ? `\nCancelled at: ${cancelledAt} (${originalTimezone})` : ""}\nCancelled by: ${cancellation.by === "customer" ? "Customer" : "Mechanic"}`;
+    const cancellationDetails = [
+      section("Appointment details", `Reference: ${id}\nService: ${appointment.service}\nOriginal appointment: ${originalDate} at ${originalTime} (${originalTimezone})`),
+      customerDetails,
+      mobileDetails,
+    ].filter(Boolean).join("\n\n");
     const categoryLabel = (cancellation.by === "mechanic" ? MECHANIC_CANCELLATION_REASONS : CUSTOMER_CANCELLATION_REASONS)
       .find(item => item.id === cancellation.category)?.label;
     const reason = cancellation.by === "mechanic"
@@ -141,10 +165,12 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
         ? `${categoryLabel ? `Reason category: ${categoryLabel}\n` : ""}Reason: ${cancellation.explanation.trim()}`
         : "A customer-facing explanation was not recorded. Please contact the shop for details.")
       : `Customer reason: ${categoryLabel || "Not provided."}${cancellation.message ? `\nCustomer message: ${cancellation.message}` : ""}`;
+    const cancellationRecord = section("Cancellation details", `${cancelledAt ? `Cancelled at: ${cancelledAt} (${originalTimezone})\n` : ""}Cancelled by: ${cancellation.by === "customer" ? "Customer" : "Mechanic"}\n\n${reason}`);
     if (kind === "cancellationMechanic") return {
       from, to: mechanicEmail, replyTo: customerEmail,
       subject: "Customer Cancelled Appointment — Ed's Auto Shop",
-      text: `The customer cancelled their ${appointment.service} appointment. It is no longer an active appointment.\n\nCustomer: ${appointment.name}\n${cancellationDetails}\n\n${reason}\n\nReview the cancellation in the mechanic dashboard. Do not confirm this cancelled appointment.`,
+      text: plainText(`The customer cancelled their ${appointment.service} appointment. It is no longer an active appointment.`,
+        cancellationDetails, cancellationRecord, section("Next steps", "Review the cancellation in the mechanic dashboard. Do not confirm this cancelled appointment.")),
     };
     const introduction = cancellation.by === "mechanic"
       ? `The shop has cancelled your ${appointment.service} appointment for ${originalDate} at ${originalTime} (${originalTimezone}). We apologize for the inconvenience.`
@@ -152,7 +178,9 @@ export function buildEmail(kind, appointment, { from, mechanicEmail, managementL
     return {
       from, to: customerEmail, replyTo: mechanicEmail,
       subject: "Appointment Cancelled — Ed's Auto Shop",
-      text: `Hello ${appointment.name},\n\n${introduction}\n\n${cancellationDetails}\n\n${reason}\n\nIf you need another appointment, you can submit a new request through our website. No replacement appointment has been booked. Reply to this email to contact the shop.\n\n${managementNote}\n\nEd's Auto Shop`,
+      text: plainText(`Hello ${appointment.name},`, introduction, cancellationDetails, cancellationRecord,
+        section("Next steps", "If you need another appointment, you can submit a new request through our website. No replacement appointment has been booked. Reply to this email to contact the shop."),
+        managementDetails, "Ed's Auto Shop"),
     };
   }
 

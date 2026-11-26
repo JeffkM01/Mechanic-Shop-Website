@@ -13,12 +13,12 @@
     }
   },
   "privacy": {
-    "approved": false,
-    "effectiveDate": null,
+    "approved": true,
+    "effectiveDate": "2026-11-25",
     "hostingProvider": "Render for website and appointment API hosting",
     "databaseProvider": "MongoDB Atlas for appointment database storage",
     "emailProvider": "Brevo for automated appointment messages; Zoho Mail for business correspondence",
-    "retentionPolicy": null,
+    "retentionPolicy": "We manually review appointment records for deletion two years after the scheduled appointment date. Declined or cancelled requests are reviewed 90 days after that same date. Records may be kept longer for outstanding work or when required. Deletion is handled manually, not automatically. You can email contact@edsautoshop.com to request a correction or deletion, subject to private identity verification and review. Backup retention is reviewed separately; this website does not automatically remove backup copies.",
     "requestInstructions": "To request access, a correction, or deletion of your appointment information, email contact@edsautoshop.com and identify the request. We verify identity privately before making changes and review any outstanding work or records that must be retained. We will explain the outcome. Do not send passwords or private appointment-management links. Requests are reviewed manually; the website does not provide automatic deletion."
   },
   "cancellation": {

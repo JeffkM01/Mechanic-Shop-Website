@@ -95,4 +95,4 @@ Render Free may idle, pausing the process and scheduled email retries. Review th
 
 ## Finish the launch review
 
-Keep these items outstanding until the owner records real evidence. Complete the separate business, mobile location/travel, privacy/retention and cancellation review, then perform the [controlled launch verification](production-launch.md#controlled-verification-before-launch). There is no automatic deployment, data deletion, restore, public launch or email replay in this document.
+Keep these items outstanding until the owner records real evidence. Recheck the approved business/privacy/cancellation profile, adopt the [manual retention and request procedure](privacy-requests-and-retention.md), verify individual mobile location/travel review and backup retention, then perform the [controlled launch verification](production-launch.md#controlled-verification-before-launch). There is no automatic deployment, data deletion, restore, public launch or email replay in this document.

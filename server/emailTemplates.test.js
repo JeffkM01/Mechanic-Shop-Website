@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEmail } from "./emailTemplates.js";
+import { buildEmail, EMAIL_KINDS } from "./emailTemplates.js";
 
 const options = { from: "shop@example.invalid", mechanicEmail: "mechanic@example.invalid" };
 const sample = {
@@ -98,4 +98,107 @@ test("invalid mobile details fail with fixed diagnostics and cannot inject recip
   assert.equal(message.subject, "Ed's Auto Shop — appointment request received");
   assert.match(message.text, /<b>Synthetic City<\/b>/);
   assert.equal(Object.hasOwn(message, "html"), false, "location values stay plain text rather than executable HTML");
+});
+
+test("pending receipts separate timing, customer, mobile review, reservation and next steps", () => {
+  const appointment = mobile();
+  appointment.scheduling.holdExpiresAt = "2030-01-07T18:00:00.000Z";
+  for (const kind of ["requestCustomer", "requestMechanic"]) {
+    const { text } = buildEmail(kind, appointment, options);
+    assert.match(text, /\n\nAppointment details\nReference: [^\n]+\nService: [^\n]+\nRequested time: /);
+    assert.match(text, /Estimated booking duration: 30 minutes\n\(not a guaranteed repair completion time\)\./);
+    assert.match(text, /\n\nCustomer and vehicle\nCustomer: Synthetic Customer\nVehicle: 2020 Example Vehicle/);
+    assert.match(text, /\n\nMobile visit\nMobile service location: Synthetic City, MO 63301/);
+    assert.match(text, /75 minutes\n\(a scheduling estimate, not a price or guaranteed arrival time\)\.\n\nThis mobile request requires mechanic review/);
+    assert.match(text, /\n\nProvisional reservation\nThe provisional time reservation expires at /);
+    assert.match(text, /request remains on file after expiry, but availability must be checked again before approval\.\n\nNext steps\n/);
+    if (kind === "requestMechanic") {
+      assert.match(text, /Vehicle: 2020 Example Vehicle\nEmail: customer@example.invalid\nPhone: 555-555-0148\nNotes: Synthetic appointment only\.\n\nMobile visit/);
+      assert.match(text, /Next steps\nThis request has NOT been approved yet\./);
+    } else {
+      assert.match(text, /Next steps\nWe will contact you after the request is reviewed\.\n\nManage appointment\n/);
+    }
+  }
+});
+
+test("all message kinds and delayed states keep readable sections, headers and final newlines", () => {
+  const cancellation = {
+    by: "customer", category: "plans_changed", message: "Synthetic plans changed.",
+    cancelledAt: "2030-01-07T14:00:00.000Z", originalDate: sample.date, originalTime: sample.time, timezone: "America/Chicago",
+  };
+  const cases = [
+    { kind: "requestCustomer", status: "pending", state: /It is PENDING until the mechanic approves it/ },
+    { kind: "requestMechanic", status: "pending", state: /This request has NOT been approved yet/ },
+    { kind: "requestCustomer", status: "confirmed", state: /already reviewed.*separate appointment decision email/ },
+    { kind: "requestMechanic", status: "confirmed", state: /already been CONFIRMED by the mechanic/ },
+    { kind: "decisionCustomer", status: "confirmed", state: /has been CONFIRMED/ },
+    { kind: "requestMechanic", status: "declined", state: /already been declined by the mechanic/ },
+    { kind: "decisionCustomer", status: "declined", state: /This request has been declined/ },
+    { kind: "requestMechanic", status: "cancelled", state: /already been CANCELLED/ },
+    { kind: "cancellationCustomer", status: "cancelled", state: /has been cancelled as you requested/ },
+    { kind: "cancellationMechanic", status: "cancelled", state: /It is no longer an active appointment/ },
+    { kind: "cancellationCustomer", status: "cancelled", by: "mechanic", state: /shop has cancelled your/ },
+  ];
+  assert.deepEqual(new Set(cases.map(item => item.kind)), new Set(EMAIL_KINDS));
+  for (const item of cases) {
+    for (const withMobile of [false, true]) {
+      const appointment = { ...(withMobile ? mobile() : sample), status: item.status,
+        decline: { explanation: "Synthetic coverage cannot be accommodated." },
+        cancellation: item.by === "mechanic"
+          ? { ...cancellation, by: "mechanic", category: "equipment_unavailable", explanation: "Synthetic equipment is unavailable." }
+          : cancellation,
+      };
+      const message = buildEmail(item.kind, appointment, options);
+      const staff = item.kind === "requestMechanic" || item.kind === "cancellationMechanic";
+      assert.equal(message.from, options.from);
+      assert.equal(message.to, staff ? options.mechanicEmail : sample.email);
+      assert.equal(message.replyTo, staff ? sample.email : options.mechanicEmail);
+      assert.equal(Object.hasOwn(message, "html"), false);
+      assert.match(message.text, item.state, `${item.kind}/${item.status}`);
+      assert.match(message.text, /\n\nAppointment details\nReference: /);
+      assert.match(message.text, /\n\nCustomer and vehicle\nCustomer: Synthetic Customer\nVehicle: 2020 Example Vehicle/);
+      assert.match(message.text, /[^\n]\n$/, "every message ends with one newline");
+      assert.doesNotMatch(message.text, /\n{3,}/, "optional sections leave no empty blocks");
+      if (withMobile) assert.match(message.text, /\n\nMobile visit\n/);
+      else assert.doesNotMatch(message.text, /Mobile visit|Mobile service location|travel planning allowance/);
+      assert.doesNotMatch(message.text, /Provisional reservation/, "missing hold metadata does not invent a reservation");
+      if (item.status === "declined") {
+        assert.match(message.text, /\n\nDecision details\n(?:Customer-facing decline reason|Reason): Synthetic coverage cannot be accommodated\./);
+        assert.doesNotMatch(message.text, /PENDING|has been CONFIRMED|requires mechanic review/);
+      }
+      if (item.kind.startsWith("cancellation")) {
+        assert.match(message.text, /\n\nCancellation details\nCancelled at: [^\n]+\nCancelled by: /);
+        assert.match(message.text, /\n\nNext steps\n/);
+        assert.match(message.text, item.by === "mechanic"
+          ? /\n\nReason category: Equipment unavailable\nReason: Synthetic equipment is unavailable\./
+          : /\n\nCustomer reason: My plans changed\nCustomer message: Synthetic plans changed\./);
+        assert.doesNotMatch(message.text, /PENDING|has been CONFIRMED|requires mechanic review/);
+      }
+    }
+  }
+});
+
+test("management sections preserve the private fragment link exactly and retain the contact fallback", () => {
+  const managementLink = "https://shop.example.invalid/manage-appointment#token=synthetic-fragment%2B%2F%3D";
+  const cancelled = { ...sample, status: "cancelled", cancellation: { by: "customer", category: "plans_changed" } };
+  for (const [kind, appointment] of [
+    ["requestCustomer", sample],
+    ["decisionCustomer", { ...sample, status: "confirmed" }],
+    ["cancellationCustomer", cancelled],
+  ]) {
+    const linked = buildEmail(kind, appointment, { ...options, managementLink });
+    assert.ok(linked.text.includes(`\n\nManage appointment\nManage this appointment securely: ${managementLink}\n\nKeep this private link to yourself. It authorizes access to this appointment.\n\n`));
+    assert.equal(linked.text.split("\n").filter(line => line.includes("https://")).length, 1);
+    const fallback = buildEmail(kind, appointment, options);
+    assert.match(fallback.text, /\n\nManage appointment\nTo manage this appointment, please contact the shop by replying to this email\./);
+    assert.doesNotMatch(fallback.text, /manage-appointment|token=/);
+  }
+  for (const [kind, appointment] of [
+    ["requestMechanic", sample],
+    ["decisionCustomer", { ...sample, status: "declined" }],
+    ["cancellationMechanic", cancelled],
+  ]) {
+    const { text } = buildEmail(kind, appointment, { ...options, managementLink });
+    assert.doesNotMatch(text, /Manage appointment|manage-appointment|token=/, "formatting does not add private links to additional message kinds");
+  }
 });
